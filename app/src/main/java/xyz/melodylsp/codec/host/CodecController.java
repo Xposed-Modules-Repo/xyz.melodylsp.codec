@@ -180,15 +180,19 @@ public final class CodecController {
         }
     }
 
-    /** Find a 1-arg method (any name, void return) accepting {@code paramType} on the hierarchy. */
+    /** Find a 1-arg method (any name, void return) accepting EXACTLY {@code paramType}. */
     private static Method findUnaryAcceptingType(Class<?> startCls, Class<?> paramType) {
         Class<?> cls = startCls;
         while (cls != null && cls != Object.class) {
             for (Method m : cls.getDeclaredMethods()) {
                 if (m.getParameterCount() != 1) continue;
+                if (m.isSynthetic() || m.isBridge()) continue;
                 Class<?> p = m.getParameterTypes()[0];
+                // Must match exactly. Using isAssignableFrom() in either direction picks up
+                // unrelated setters (e.g. setSummaryProvider, setOnPreferenceClickListener) that
+                // happen to take *some* interface, then ListPreference.onSetInitialValue tries to
+                // (String) cast our Proxy and crashes with ClassCastException.
                 if (p == paramType) return m;
-                if (p.isAssignableFrom(paramType)) return m;
             }
             cls = cls.getSuperclass();
         }
@@ -322,7 +326,9 @@ public final class CodecController {
     }
 
     private void renderUnknown(Subscription sub) {
-        PrefRef.setSummary(sub.prefs.codecDisplay, Strings.STATE_CODEC_UNKNOWN);
+        // codecDisplay points at the category itself; mutating its title gives us the merged
+        // "蓝牙音质 · LHDC" header without needing a separate Preference row.
+        PrefRef.setTitle(sub.prefs.category, Strings.CODEC_BLOCK_TITLE);
         PrefRef.setVisible(sub.prefs.qualityOption, false);
         PrefRef.setVisible(sub.prefs.sampleRateOption, false);
         PrefRef.setChecked(sub.prefs.rememberToggle, prefs.isRemembered(sub.mac));
@@ -330,13 +336,15 @@ public final class CodecController {
 
     private void renderSnapshot(CodecSnapshot snapshot, Subscription sub, boolean fromCache) {
         String codecName = CodecLabelTable.codecLabel(context, snapshot.activeCodecType);
+        String header;
         if (fromCache) {
             String stamp = new SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(new Date());
-            PrefRef.setSummary(sub.prefs.codecDisplay,
-                    codecName + "  ·  " + String.format(Strings.FRESHNESS_LABEL_FORMAT, stamp));
+            header = Strings.CODEC_BLOCK_TITLE + " · " + codecName + "  ("
+                    + String.format(Strings.FRESHNESS_LABEL_FORMAT, stamp) + ")";
         } else {
-            PrefRef.setSummary(sub.prefs.codecDisplay, codecName);
+            header = Strings.CODEC_BLOCK_TITLE + " · " + codecName;
         }
+        PrefRef.setTitle(sub.prefs.category, header);
 
         renderQuality(snapshot, sub);
         renderSampleRate(snapshot, sub);
@@ -346,13 +354,13 @@ public final class CodecController {
     private void renderQuality(CodecSnapshot snapshot, Subscription sub) {
         long[] selectable = snapshot.selectableCodecSpecific1;
         Object q = sub.prefs.qualityOption;
+        if (q == null) return;
         if (selectable == null || selectable.length == 0) {
             PrefRef.setVisible(q, false);
             return;
         }
         // Hide Quality option for codecs that do not expose quality steps (e.g. SBC default).
-        if (snapshot.activeCodecType != CodecLabelTable.CODEC_LDAC
-                && snapshot.activeCodecType != CodecLabelTable.CODEC_LHDC) {
+        if (!CodecLabelTable.isQualityCapable(snapshot.activeCodecType)) {
             PrefRef.setVisible(q, false);
             return;
         }
@@ -378,6 +386,7 @@ public final class CodecController {
     private void renderSampleRate(CodecSnapshot snapshot, Subscription sub) {
         int[] rates = CodecSnapshot.decodeSampleRateBits(snapshot.selectableSampleRateMask);
         Object r = sub.prefs.sampleRateOption;
+        if (r == null) return;
         if (rates.length == 0) {
             PrefRef.setVisible(r, false);
             return;

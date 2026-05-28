@@ -30,6 +30,13 @@ public final class CodecLabelTable {
     public static final int CODEC_OPUS = 6;
     public static final int CODEC_APTX_ADAPTIVE = 7;
     public static final int CODEC_LHDC = 8;
+    /**
+     * OPPO / OnePlus vendor stack assigns LHDC variants to the 0x10..0x1F range. The exact
+     * sub-id depends on the vendor build (0x13 for the OPPO Enco X3, 0x14 for some Reno
+     * builds). We treat any id in this range as LHDC unless evidence says otherwise.
+     */
+    public static final int OPLUS_VENDOR_LHDC_RANGE_LOW = 0x10;
+    public static final int OPLUS_VENDOR_LHDC_RANGE_HIGH = 0x1F;
 
     // LDAC quality (codecSpecific1 values, source: bluetooth/ldac vendor headers).
     public static final long LDAC_QUALITY_HIGH = 1000L;
@@ -65,8 +72,26 @@ public final class CodecLabelTable {
             case CODEC_LHDC:
                 return Strings.CODEC_LABEL_LHDC;
             default:
+                if (codecType >= OPLUS_VENDOR_LHDC_RANGE_LOW
+                        && codecType <= OPLUS_VENDOR_LHDC_RANGE_HIGH) {
+                    return Strings.CODEC_LABEL_LHDC;
+                }
                 return "Codec(0x" + Integer.toHexString(codecType) + ")";
         }
+    }
+
+    /** Returns true when the codec id is one of the LDAC / LHDC family that exposes quality steps. */
+    public static boolean isQualityCapable(int codecType) {
+        if (codecType == CODEC_LDAC || codecType == CODEC_LHDC) return true;
+        return codecType >= OPLUS_VENDOR_LHDC_RANGE_LOW
+                && codecType <= OPLUS_VENDOR_LHDC_RANGE_HIGH;
+    }
+
+    /** Returns true when the codec id should be treated as LHDC for quality decoding. */
+    public static boolean isLhdc(int codecType) {
+        if (codecType == CODEC_LHDC) return true;
+        return codecType >= OPLUS_VENDOR_LHDC_RANGE_LOW
+                && codecType <= OPLUS_VENDOR_LHDC_RANGE_HIGH;
     }
 
     /** Resolve the LDAC / LHDC quality label, or fall back to {@code "档位 (rawValue)"}. */
@@ -76,7 +101,7 @@ public final class CodecLabelTable {
             if (specific1 == LDAC_QUALITY_MID) return Strings.QUALITY_LDAC_660;
             if (specific1 == LDAC_QUALITY_LOW) return Strings.QUALITY_LDAC_330;
         }
-        if (codecType == CODEC_LHDC) {
+        if (isLhdc(codecType)) {
             // The vendor encodes the version in the low byte; mask it before lookup so that
             // future bit fields (e.g. lossless toggle) do not break label resolution.
             long versionByte = specific1 & 0xFFL;

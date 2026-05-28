@@ -37,12 +37,42 @@ public final class PrefRef {
         }
     }
 
+    /**
+     * Prefer {@code (Context, AttributeSet)} which lets COUI / androidx.preference resolve the
+     * default style attribute from the host theme (e.g.
+     * {@code R.attr.preferenceCategoryStyle}). Without this, programmatically-created
+     * {@link com.coui.appcompat.preference.COUIPreferenceCategory} instances paint their title
+     * with the framework default white-on-light color (visible on white background as if blank)
+     * and ignore dark-mode tinting. Falls back to the single-arg constructor.
+     */
+    public static Object newInstanceWithAttrs(Class<?> cls, Context context) {
+        try {
+            Constructor<?> ctor = cls.getConstructor(
+                    Context.class, android.util.AttributeSet.class);
+            return ctor.newInstance(context, null);
+        } catch (Throwable ignored) {
+        }
+        return newInstance(cls, context);
+    }
+
+    /**
+     * Set the {@code mKey} field. {@code androidx.preference.Preference#setKey} accepts a
+     * {@code String} (not {@code CharSequence}), so we must reflect against {@code String.class}
+     * — using {@code CharSequence.class} silently no-ops, leaving every Preference with
+     * {@code mKey == null} and triggering an {@code "Key cannot be null"} crash the moment any
+     * {@code PreferenceDialogFragmentCompat} tries to look itself back up by key.
+     */
     public static void setKey(Object pref, String key) {
-        invokeVoid(pref, "setKey", new Class[]{CharSequence.class}, new Object[]{key});
+        invokeVoid(pref, "setKey", new Class[]{String.class}, new Object[]{key});
     }
 
     public static void setTitle(Object pref, CharSequence title) {
         invokeVoid(pref, "setTitle", new Class[]{CharSequence.class}, new Object[]{title});
+    }
+
+    /** {@code Preference} also exposes {@code setTitle(int)}; keep them separate. */
+    public static void setTitleRes(Object pref, int resId) {
+        invokeVoid(pref, "setTitle", new Class[]{int.class}, new Object[]{resId});
     }
 
     public static void setSummary(Object pref, CharSequence summary) {
