@@ -105,9 +105,33 @@ public final class PrefRef {
                 new Class[]{CharSequence.class}, new Object[]{key});
     }
 
-    /** Calls {@code getPreferenceScreen()} on a fragment. */
+    /** Calls {@code getPreferenceScreen()} on a fragment, with PreferenceManager fallback. */
     public static Object getPreferenceScreen(Object fragment) {
-        return invoke(fragment, "getPreferenceScreen", new Class[0], new Object[0]);
+        Object screen = invoke(fragment, "getPreferenceScreen", new Class[0], new Object[0]);
+        if (screen != null) return screen;
+        Object pm = invoke(fragment, "getPreferenceManager", new Class[0], new Object[0]);
+        if (pm != null) {
+            Object via = invoke(pm, "getPreferenceScreen", new Class[0], new Object[0]);
+            if (via != null) return via;
+        }
+        // Last resort: walk fields and pick anything whose class name ends with "PreferenceScreen".
+        Class<?> cls = fragment.getClass();
+        while (cls != null && cls != Object.class) {
+            for (java.lang.reflect.Field f : cls.getDeclaredFields()) {
+                Class<?> ft = f.getType();
+                String name = ft.getName();
+                if (name.endsWith(".PreferenceScreen") || name.endsWith("$PreferenceScreen")) {
+                    try {
+                        f.setAccessible(true);
+                        Object v = f.get(fragment);
+                        if (v != null) return v;
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+            cls = cls.getSuperclass();
+        }
+        return null;
     }
 
     /** Calls {@code getPreferenceCount()} on a screen / category. */

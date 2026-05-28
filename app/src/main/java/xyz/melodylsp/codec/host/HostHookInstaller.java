@@ -7,7 +7,6 @@ import android.os.Bundle;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
 
 import xyz.melodylsp.codec.MelodyCodecLspEntry;
 import xyz.melodylsp.codec.bt.BluetoothCodecReflect;
@@ -90,12 +89,16 @@ public final class HostHookInstaller {
             MLog.w("HighAudioPreferenceFragment class not found");
             return;
         }
-        Method onCreate = findDeclaredMethod(fragCls, "onCreate", Bundle.class);
-        if (onCreate == null) {
-            MLog.w("HighAudioPreferenceFragment.onCreate(Bundle) not found");
+        // Hook onViewCreated(View, Bundle) which runs after onCreate -> onCreatePreferences ->
+        // onCreateView, so the PreferenceScreen is guaranteed to be attached. We deliberately
+        // avoid hooking onCreate / onCreatePreferences because both their method names can be
+        // R8-renamed inside the host APK.
+        Method onViewCreated = findOnViewCreated(fragCls);
+        if (onViewCreated == null) {
+            MLog.w("HighAudioPreferenceFragment.onViewCreated(View,Bundle) not found");
             return;
         }
-        module.hook(onCreate).intercept(chain -> {
+        module.hook(onViewCreated).intercept(chain -> {
             Object result = chain.proceed();
             try {
                 insertIntoHighAudio(chain.getThisObject());
@@ -112,23 +115,45 @@ public final class HostHookInstaller {
             MLog.w("OneSpaceListFragment class not found");
             return;
         }
-        // OneSpaceListFragment.r() corresponds to onCreatePreferences. Hook every declared
-        // method named "r" with no parameters; Kotlin synthetics also use the same name shape
-        // but they take parameters, so this filter avoids collisions.
-        for (Method m : fragCls.getDeclaredMethods()) {
-            if (!"r".equals(m.getName())) continue;
-            if (m.getParameterCount() != 0) continue;
-            if (Modifier.isStatic(m.getModifiers())) continue;
-            module.hook(m).intercept(chain -> {
-                Object result = chain.proceed();
-                try {
-                    insertIntoOneSpace(chain.getThisObject());
-                } catch (Throwable t) {
-                    MLog.e("OneSpace insertion failed", t);
-                }
-                return result;
-            });
+        Method onViewCreated = findOnViewCreated(fragCls);
+        if (onViewCreated == null) {
+            MLog.w("OneSpaceListFragment.onViewCreated(View,Bundle) not found");
+            return;
         }
+        module.hook(onViewCreated).intercept(chain -> {
+            Object result = chain.proceed();
+            try {
+                insertIntoOneSpace(chain.getThisObject());
+            } catch (Throwable t) {
+                MLog.e("OneSpace insertion failed", t);
+            }
+            return result;
+        });
+    }
+
+    /**
+     * Walks the class hierarchy and returns the first method named {@code onViewCreated} that
+     * accepts {@code (View, Bundle)}. Doing so avoids depending on the exact declaring class —
+     * the host fragment subclass may or may not override the method.
+     */
+    private Method findOnViewCreated(Class<?> startCls) {
+        Class<?> viewCls;
+        try {
+            viewCls = Class.forName("android.view.View", false, classLoader);
+        } catch (ClassNotFoundException e) {
+            return null;
+        }
+        Class<?> cls = startCls;
+        while (cls != null && cls != Object.class) {
+            try {
+                Method m = cls.getDeclaredMethod("onViewCreated", viewCls, Bundle.class);
+                m.setAccessible(true);
+                return m;
+            } catch (NoSuchMethodException ignored) {
+                cls = cls.getSuperclass();
+            }
+        }
+        return null;
     }
 
     private void insertIntoHighAudio(Object fragment) {
@@ -262,16 +287,6 @@ public final class HostHookInstaller {
         try {
             return Class.forName(name, false, classLoader);
         } catch (Throwable t) {
-            return null;
-        }
-    }
-
-    private static Method findDeclaredMethod(Class<?> cls, String name, Class<?>... paramTypes) {
-        try {
-            Method m = cls.getDeclaredMethod(name, paramTypes);
-            m.setAccessible(true);
-            return m;
-        } catch (NoSuchMethodException e) {
             return null;
         }
     }
