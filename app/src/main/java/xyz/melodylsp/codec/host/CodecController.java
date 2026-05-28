@@ -109,30 +109,28 @@ public final class CodecController {
 
     private void wireListeners(Subscription sub) {
         ClassLoader cl = context.getClassLoader();
-        Class<?> changeListenerCls = PrefRef.load(cl, "androidx.preference.Preference$OnPreferenceChangeListener");
+        // The host APK is R8-minified and the inner interface
+        // androidx.preference.Preference$OnPreferenceChangeListener has been renamed. Probe for
+        // it by walking the Preference class for 1-arg setters whose only parameter is an
+        // interface declaring a single boolean method (Preference, Object) -> boolean.
+        Class<?> changeListenerCls = resolveChangeListenerInterface(cl, sub.prefs.qualityOption);
         if (changeListenerCls == null) {
-            MLog.w("OnPreferenceChangeListener interface not found on host classpath");
+            MLog.w("OnPreferenceChangeListener interface not resolvable; UI is read-only");
             return;
         }
         Object qualityListener = Proxy.newProxyInstance(cl, new Class[]{changeListenerCls},
                 (proxy, method, args) -> {
-                    if (!"onPreferenceChange".equals(method.getName()) || args == null || args.length < 2) {
-                        return false;
-                    }
+                    if (args == null || args.length < 2) return false;
                     return handleQualityChange(sub, args[1]);
                 });
         Object sampleListener = Proxy.newProxyInstance(cl, new Class[]{changeListenerCls},
                 (proxy, method, args) -> {
-                    if (!"onPreferenceChange".equals(method.getName()) || args == null || args.length < 2) {
-                        return false;
-                    }
+                    if (args == null || args.length < 2) return false;
                     return handleSampleRateChange(sub, args[1]);
                 });
         Object rememberListener = Proxy.newProxyInstance(cl, new Class[]{changeListenerCls},
                 (proxy, method, args) -> {
-                    if (!"onPreferenceChange".equals(method.getName()) || args == null || args.length < 2) {
-                        return false;
-                    }
+                    if (args == null || args.length < 2) return false;
                     return handleRememberChange(sub, args[1]);
                 });
 
@@ -141,10 +139,39 @@ public final class CodecController {
         invokeSetChangeListener(sub.prefs.rememberToggle, rememberListener, changeListenerCls);
     }
 
+    /**
+     * Discover the {@code OnPreferenceChangeListener} interface class by walking
+     * {@code androidx.preference.Preference} for a 1-arg setter whose parameter is an
+     * interface with a single abstract method that returns boolean.
+     */
+    private Class<?> resolveChangeListenerInterface(ClassLoader cl, Object prefSample) {
+        Class<?> prefBase = PrefRef.load(cl, "androidx.preference.Preference");
+        if (prefBase == null) return null;
+        Class<?> sampleCls = prefSample != null ? prefSample.getClass() : prefBase;
+        Class<?> cls = sampleCls;
+        while (cls != null && cls != Object.class) {
+            for (Method m : cls.getDeclaredMethods()) {
+                if (m.getParameterCount() != 1) continue;
+                Class<?> p = m.getParameterTypes()[0];
+                if (!p.isInterface()) continue;
+                Method[] ifaceMethods = p.getDeclaredMethods();
+                if (ifaceMethods.length != 1) continue;
+                Method only = ifaceMethods[0];
+                if (only.getReturnType() != boolean.class) continue;
+                if (only.getParameterCount() != 2) continue;
+                // First parameter should be Preference (or a subclass), second any Object.
+                if (!prefBase.isAssignableFrom(only.getParameterTypes()[0])) continue;
+                return p;
+            }
+            cls = cls.getSuperclass();
+        }
+        return null;
+    }
+
     private static void invokeSetChangeListener(Object pref, Object listener, Class<?> ifaceCls) {
         if (pref == null || listener == null) return;
         try {
-            Method m = findMethodInHierarchy(pref.getClass(), "setOnPreferenceChangeListener", ifaceCls);
+            Method m = findUnaryAcceptingType(pref.getClass(), ifaceCls);
             if (m != null) {
                 m.setAccessible(true);
                 m.invoke(pref, listener);
@@ -154,14 +181,17 @@ public final class CodecController {
         }
     }
 
-    private static Method findMethodInHierarchy(Class<?> startCls, String name, Class<?> paramType) {
+    /** Find a 1-arg method (any name, void return) accepting {@code paramType} on the hierarchy. */
+    private static Method findUnaryAcceptingType(Class<?> startCls, Class<?> paramType) {
         Class<?> cls = startCls;
         while (cls != null && cls != Object.class) {
-            try {
-                return cls.getDeclaredMethod(name, paramType);
-            } catch (NoSuchMethodException ignored) {
-                cls = cls.getSuperclass();
+            for (Method m : cls.getDeclaredMethods()) {
+                if (m.getParameterCount() != 1) continue;
+                Class<?> p = m.getParameterTypes()[0];
+                if (p == paramType) return m;
+                if (p.isAssignableFrom(paramType)) return m;
             }
+            cls = cls.getSuperclass();
         }
         return null;
     }

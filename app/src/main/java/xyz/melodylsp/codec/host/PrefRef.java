@@ -87,15 +87,66 @@ public final class PrefRef {
         return r != null ? r.toString() : null;
     }
 
-    /** Calls {@code addPreference(Preference)} on the given screen / category. */
+    /**
+     * Calls {@code addPreference(Preference)} on the given screen / category. The method name
+     * itself has been R8-renamed inside the host APK; we resolve it by signature instead —
+     * pick any 1-arg method whose parameter type extends {@code androidx.preference.Preference}
+     * and which returns a {@code boolean} (the actual signature is
+     * {@code boolean addPreference(Preference)}, but R8 may also have stripped the boolean to
+     * void, so we accept void too).
+     */
     public static void addPreference(Object container, Object pref) {
         if (container == null || pref == null) return;
-        Class<?> prefCls = load(container.getClass().getClassLoader(), "androidx.preference.Preference");
-        if (prefCls == null) {
-            xyz.melodylsp.codec.util.MLog.w("addPreference: Preference class missing");
+        ClassLoader cl = container.getClass().getClassLoader();
+        Class<?> prefBase = load(cl, "androidx.preference.Preference");
+        if (prefBase == null) {
+            xyz.melodylsp.codec.util.MLog.w("addPreference: androidx.preference.Preference class missing");
             return;
         }
-        invokeVoid(container, "addPreference", new Class[]{prefCls}, new Object[]{pref});
+        Method method = findUnaryMethod(container.getClass(), prefBase, /* allowVoidReturn */ true);
+        if (method == null) {
+            xyz.melodylsp.codec.util.MLog.w("addPreference: no addPreference-shaped method on "
+                    + container.getClass().getName());
+            return;
+        }
+        try {
+            method.setAccessible(true);
+            method.invoke(container, pref);
+        } catch (Throwable t) {
+            xyz.melodylsp.codec.util.MLog.w("addPreference reflective invoke failed", t);
+        }
+    }
+
+    /**
+     * Find a 1-arg method (any name) accepting {@code paramBase} (or a subclass) on the given
+     * class hierarchy. Used to resolve R8-renamed library setters. Returns the first match;
+     * picks the most-derived parameter type when ties exist by walking subclasses-first.
+     */
+    private static Method findUnaryMethod(Class<?> startCls, Class<?> paramBase, boolean allowVoidReturn) {
+        Class<?> cls = startCls;
+        Method best = null;
+        while (cls != null && cls != Object.class) {
+            for (Method m : cls.getDeclaredMethods()) {
+                if (m.getParameterCount() != 1) continue;
+                Class<?> p = m.getParameterTypes()[0];
+                if (!paramBase.isAssignableFrom(p)) continue;
+                Class<?> ret = m.getReturnType();
+                if (!allowVoidReturn && ret == void.class) continue;
+                if (m.isSynthetic() || m.isBridge()) continue;
+                if (best == null) {
+                    best = m;
+                } else {
+                    // Prefer the method whose parameter type is closer to paramBase (i.e. the
+                    // exact match) so that we avoid picking an unrelated setter taking the same
+                    // base type.
+                    if (best.getParameterTypes()[0] != paramBase && p == paramBase) {
+                        best = m;
+                    }
+                }
+            }
+            cls = cls.getSuperclass();
+        }
+        return best;
     }
 
     /**
