@@ -5,7 +5,6 @@ import android.content.Context;
 import android.content.pm.PackageInfo;
 import android.os.Bundle;
 
-import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
 import xyz.melodylsp.codec.MelodyCodecLspEntry;
@@ -28,8 +27,6 @@ public final class HostHookInstaller {
     private static final String CLASS_HIGH_AUDIO =
             "com.oplus.melody.ui.component.detail.highaudio.HighAudioPreferenceFragment";
     private static final String CLASS_ONE_SPACE_FRAGMENT = "com.oplus.melody.onespace.d";
-    private static final String FIELD_HIGH_AUDIO_MAC = "f27613b";
-    private static final String FIELD_ONE_SPACE_MAC = "f17198C";
 
     private final MelodyCodecLspEntry module;
     private final ClassLoader classLoader;
@@ -246,41 +243,51 @@ public final class HostHookInstaller {
         }
     }
 
-    private static String resolveHighAudioMac(Object fragment) {
+    /**
+     * Resolves the MAC address that the OneSpace / HighAudio fragment is bound to.
+     *
+     * <p>The host stores the MAC in the parent Activity's Intent under
+     * {@code device_mac_info} — a plain string literal that survives R8 minification. Field
+     * names are R8-hashed and change between builds, so we no longer try to read them.</p>
+     */
+    private static String resolveMacFromActivityIntent(Object fragment) {
         try {
-            // The host stores the MAC on the parent fragment (HighAudioDetailFragment.f27613b).
-            Method getParent = fragment.getClass().getMethod("getParentFragment");
-            Object parent = getParent.invoke(fragment);
-            if (parent == null) return null;
-            return readField(parent, FIELD_HIGH_AUDIO_MAC);
+            Method getActivity = fragment.getClass().getMethod("getActivity");
+            Object activity = getActivity.invoke(fragment);
+            if (activity == null) return null;
+            Method getIntent = activity.getClass().getMethod("getIntent");
+            Object intent = getIntent.invoke(activity);
+            if (intent == null) return null;
+            Method getStringExtra = intent.getClass().getMethod("getStringExtra", String.class);
+            Object value = getStringExtra.invoke(intent, "device_mac_info");
+            if (value == null) return null;
+            String mac = value.toString();
+            return mac.isEmpty() ? null : mac;
         } catch (Throwable t) {
-            MLog.w("resolveHighAudioMac failed", t);
+            MLog.w("resolveMacFromActivityIntent failed", t);
             return null;
         }
+    }
+
+    private static String resolveHighAudioMac(Object fragment) {
+        // First try the parent fragment's intent (HighAudioPreferenceFragment is hosted by
+        // HighAudioDetailFragment). Both share the same activity intent so the result is the
+        // same as querying the fragment directly, but the parent path matches the host's own
+        // MAC plumbing.
+        try {
+            Method getParent = fragment.getClass().getMethod("getParentFragment");
+            Object parent = getParent.invoke(fragment);
+            if (parent != null) {
+                String mac = resolveMacFromActivityIntent(parent);
+                if (mac != null) return mac;
+            }
+        } catch (Throwable ignored) {
+        }
+        return resolveMacFromActivityIntent(fragment);
     }
 
     private static String resolveOneSpaceMac(Object fragment) {
-        try {
-            return readField(fragment, FIELD_ONE_SPACE_MAC);
-        } catch (Throwable t) {
-            MLog.w("resolveOneSpaceMac failed", t);
-            return null;
-        }
-    }
-
-    private static String readField(Object target, String fieldName) throws ReflectiveOperationException {
-        Class<?> cls = target.getClass();
-        while (cls != null && cls != Object.class) {
-            try {
-                Field f = cls.getDeclaredField(fieldName);
-                f.setAccessible(true);
-                Object value = f.get(target);
-                return value != null ? value.toString() : null;
-            } catch (NoSuchFieldException ignored) {
-                cls = cls.getSuperclass();
-            }
-        }
-        throw new NoSuchFieldException(fieldName);
+        return resolveMacFromActivityIntent(fragment);
     }
 
     private Class<?> loadHostClass(String name) {
