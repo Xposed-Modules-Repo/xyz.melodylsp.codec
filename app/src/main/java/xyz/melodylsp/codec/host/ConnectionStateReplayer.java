@@ -1,5 +1,6 @@
 package xyz.melodylsp.codec.host;
 
+import android.bluetooth.BluetoothDevice;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -9,6 +10,7 @@ import android.os.Looper;
 
 import xyz.melodylsp.codec.bridge.CodecRequest;
 import xyz.melodylsp.codec.bridge.CodecSnapshot;
+import xyz.melodylsp.codec.label.CodecLabelTable;
 import xyz.melodylsp.codec.storage.PreferenceStore;
 import xyz.melodylsp.codec.util.MLog;
 
@@ -51,10 +53,10 @@ public final class ConnectionStateReplayer {
                 if (!ACTION_CONNECTION_STATE_CHANGED.equals(intent.getAction())) return;
                 int state = intent.getIntExtra(EXTRA_STATE, -1);
                 if (state != STATE_CONNECTED) return;
-                Object device = intent.getParcelableExtra(EXTRA_DEVICE);
+                BluetoothDevice device = intent.getParcelableExtra(EXTRA_DEVICE);
                 if (device == null) return;
-                String mac = device.toString();
-                // BluetoothDevice.toString() returns the MAC verbatim.
+                String mac = device.getAddress();
+                if (mac == null || mac.isEmpty()) mac = device.toString();
                 handleConnected(mac);
             }
         };
@@ -97,8 +99,8 @@ public final class ConnectionStateReplayer {
             return;
         }
 
-        boolean specific1Selectable = arrayContains(live.selectableCodecSpecific1, stored.codecSpecific1);
-        boolean sampleRateSelectable = (live.selectableSampleRateMask & stored.sampleRate) != 0;
+        boolean specific1Selectable = isSpecific1Selectable(live, stored.codecSpecific1);
+        boolean sampleRateSelectable = isSampleRateSelectable(live, stored.sampleRate);
 
         if (!specific1Selectable && !sampleRateSelectable) {
             MLog.event("replay.skip.both",
@@ -127,7 +129,26 @@ public final class ConnectionStateReplayer {
 
     private static boolean arrayContains(long[] arr, long value) {
         if (arr == null) return false;
-        for (long v : arr) if (v == value) return true;
+        for (long v : arr) {
+            if (v == value) return true;
+            if ((v & 0xFFL) == (value & 0xFFL)) return true;
+        }
         return false;
+    }
+
+    private static boolean isSpecific1Selectable(CodecSnapshot live, long value) {
+        if (live == null) return false;
+        if (arrayContains(live.selectableCodecSpecific1, value)) return true;
+        return CodecLabelTable.isLhdc(live.activeCodecType)
+                || live.activeCodecType == CodecLabelTable.CODEC_LDAC;
+    }
+
+    private static boolean isSampleRateSelectable(CodecSnapshot live, int value) {
+        if (live == null) return false;
+        if (value == 0) return true;
+        int mask = live.selectableSampleRateMask;
+        if ((mask & value) != 0) return true;
+        return CodecLabelTable.isLhdc(live.activeCodecType)
+                && (value == 0x2 || value == 0x8 || value == 0x20);
     }
 }

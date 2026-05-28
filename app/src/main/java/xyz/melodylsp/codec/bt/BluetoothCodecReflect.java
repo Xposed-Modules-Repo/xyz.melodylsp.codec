@@ -72,6 +72,7 @@ public final class BluetoothCodecReflect {
     public CodecSnapshot readStatus(String mac) {
         BluetoothA2dp proxy = acquireProxyBlocking();
         BluetoothDevice device = ensureDevice(mac);
+        if (!isConnected(proxy, device)) return null;
         Object status;
         try {
             Method m = proxy.getClass().getMethod("getCodecStatus", BluetoothDevice.class);
@@ -82,6 +83,24 @@ public final class BluetoothCodecReflect {
         }
         if (status == null) return null;
         return readSnapshotFromCodecStatus(mac, status);
+    }
+
+    private static boolean isConnected(BluetoothA2dp proxy, BluetoothDevice device) {
+        try {
+            String target = device.getAddress();
+            if (target == null) return true;
+            List<BluetoothDevice> connected = proxy.getConnectedDevices();
+            if (connected == null) return false;
+            for (BluetoothDevice item : connected) {
+                String address = item != null ? item.getAddress() : null;
+                if (address != null && address.equalsIgnoreCase(target)) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (Throwable t) {
+            return true;
+        }
     }
 
     /** Writes a {@link CodecRequest} via {@code setCodecConfigPreference}. */

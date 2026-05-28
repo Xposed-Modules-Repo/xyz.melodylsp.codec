@@ -70,6 +70,11 @@ public final class PrefRef {
         invokeVoid(pref, "setTitle", new Class[]{CharSequence.class}, new Object[]{title});
     }
 
+    public static CharSequence getTitle(Object pref) {
+        Object r = invoke(pref, "getTitle", new Class[0], new Object[0]);
+        return r instanceof CharSequence ? (CharSequence) r : null;
+    }
+
     /** {@code Preference} also exposes {@code setTitle(int)}; keep them separate. */
     public static void setTitleRes(Object pref, int resId) {
         invokeVoid(pref, "setTitle", new Class[]{int.class}, new Object[]{resId});
@@ -77,6 +82,11 @@ public final class PrefRef {
 
     public static void setSummary(Object pref, CharSequence summary) {
         invokeVoid(pref, "setSummary", new Class[]{CharSequence.class}, new Object[]{summary});
+    }
+
+    public static CharSequence getSummary(Object pref) {
+        Object r = invoke(pref, "getSummary", new Class[0], new Object[0]);
+        return r instanceof CharSequence ? (CharSequence) r : null;
     }
 
     public static void setOrder(Object pref, int order) {

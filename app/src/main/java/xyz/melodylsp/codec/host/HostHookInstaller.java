@@ -62,6 +62,7 @@ public final class HostHookInstaller {
     private static final String KEY_CODEC_CATEGORY = "melody_codec_lsp_category";
     private static final String KEY_CODEC_QUALITY = "melody_codec_lsp_quality";
     private static final String KEY_NOISE_SWITCH = "pref_noise_switch";
+    private static final String KEY_NOISE_MENU = "pref_noise_menu";
     private static final String KEY_MORE_SETTING = "pref_more_setting";
     private static final String KEY_FOOTER = "footer_preference";
 
@@ -256,7 +257,7 @@ public final class HostHookInstaller {
         Context themedContext = resolveThemedContext(fragment);
         if (themedContext == null) return false;
 
-        Object noiseMenu = PrefRef.findPreference(screen, MelodyResIds.KEY_NOISE_MENU_CATEGORY);
+        Object noiseMenuCategory = PrefRef.findPreference(screen, MelodyResIds.KEY_NOISE_MENU_CATEGORY);
         Object noiseSwitch = PrefRef.findPreference(screen, KEY_NOISE_SWITCH);
         Object moreSettingCategory = PrefRef.findPreference(
                 screen, MelodyResIds.KEY_MORE_SETTING_CATEGORY);
@@ -275,8 +276,8 @@ public final class HostHookInstaller {
         if (anchor != null) {
             int anchorOrder = PrefRef.getOrder(anchor);
             targetOrder = Math.max(0, anchor == noiseSwitch ? anchorOrder + 1 : anchorOrder);
-        } else if (noiseMenu != null) {
-            targetOrder = PrefRef.getOrder(noiseMenu) + 1;
+        } else if (noiseMenuCategory != null) {
+            targetOrder = PrefRef.getOrder(noiseMenuCategory) + 1;
         } else {
             targetOrder = PrefRef.getPreferenceCount(screen);
         }
@@ -285,17 +286,36 @@ public final class HostHookInstaller {
             MLog.w("OneSpace mac unresolved; skip");
             return false;
         }
-        shiftPreferenceOrders(screen, targetOrder, +3);
+        Object insertionParent = noiseMenuCategory != null ? noiseMenuCategory : screen;
+        if (insertionParent == noiseMenuCategory) {
+            PrefRef.setVisible(noiseMenuCategory, true);
+            setCategoryTopMarginZero(noiseMenuCategory);
+            Object noiseMenuRow = PrefRef.findPreference(noiseMenuCategory, KEY_NOISE_MENU);
+            PrefRef.setVisible(noiseMenuRow, false);
+            targetOrder = 0;
+            shiftPreferenceOrders(insertionParent, targetOrder, +3);
+        } else {
+            shiftPreferenceOrders(screen, targetOrder, +3);
+        }
         // OneSpace is for instant switching only: use top-level rows and skip the remember
         // toggle. Persistence is owned by DetailMain's panel.
         CodecPreferences prefs = CodecBlockBuilder.buildAndInsert(
-                themedContext, screen, targetOrder,
+                themedContext, insertionParent, targetOrder,
                 /* wrapInCategory= */ false, /* includeRemember= */ false);
         if (prefs == null) return false;
         controller.attach(mac, prefs, fragment);
         attachedScreens.add(screen);
         MLog.event("onespace.injected", "mac_len", mac.length(), "order", targetOrder);
         return true;
+    }
+
+    private static void setCategoryTopMarginZero(Object category) {
+        if (category == null) return;
+        try {
+            Method m = category.getClass().getMethod("m", int.class);
+            m.invoke(category, 2);
+        } catch (Throwable ignored) {
+        }
     }
 
     /** Shifts the {@code order} of every Preference at index >= {@code threshold} by {@code delta}. */

@@ -80,6 +80,7 @@ public final class CodecBlockBuilder {
                 PrefRef.setSelectable(header, false);
                 PrefRef.setIconSpaceReserved(header, false);
                 PrefRef.setPersistent(header, false);
+                PrefRef.setWidgetLayoutResource(header, 0);
                 PrefRef.setOrder(header, order);
                 PrefRef.addPreference(container, header);
                 firstChildOrder = order + 1;
@@ -96,6 +97,7 @@ public final class CodecBlockBuilder {
             PrefRef.setVisible(quality, false);
             PrefRef.setIconSpaceReserved(quality, false);
             PrefRef.setPersistent(quality, false);
+            PrefRef.setWidgetLayoutResource(quality, 0);
             PrefRef.setOrder(quality, firstChildOrder);
             PrefRef.addPreference(insertionParent, quality);
         }
@@ -108,6 +110,7 @@ public final class CodecBlockBuilder {
             PrefRef.setVisible(sampleRate, false);
             PrefRef.setIconSpaceReserved(sampleRate, false);
             PrefRef.setPersistent(sampleRate, false);
+            PrefRef.setWidgetLayoutResource(sampleRate, 0);
             PrefRef.setOrder(sampleRate, firstChildOrder + 1);
             PrefRef.addPreference(insertionParent, sampleRate);
         }
@@ -190,7 +193,8 @@ public final class CodecBlockBuilder {
     private static boolean isUnsuitableTemplate(Object pref) {
         String key = PrefRef.getKey(pref);
         return "footer_preference".equals(key)
-                || "pref_device_info".equals(key);
+                || "pref_device_info".equals(key)
+                || "pref_noise_menu".equals(key);
     }
 
     private static boolean matchesSuffix(String className, String suffix) {
