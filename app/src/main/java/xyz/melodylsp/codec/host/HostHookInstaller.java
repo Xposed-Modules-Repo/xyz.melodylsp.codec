@@ -307,7 +307,7 @@ public final class HostHookInstaller {
         setCategoryTopMarginZero(prefs.category);
         // Add bottom padding to the RecyclerView so the last host row ("耳机设置") is not
         // clipped by overscroll-bounce after our injection extends the content height.
-        addRecyclerBottomPadding(fragment, dpToPx(themedContext, 64));
+        addRecyclerBottomPadding(fragment, dpToPx(themedContext, 32));
         controller.attach(mac, prefs, fragment);
         attachedScreens.add(screen);
         MLog.event("onespace.injected", "mac_len", mac.length(), "order", targetOrder,
