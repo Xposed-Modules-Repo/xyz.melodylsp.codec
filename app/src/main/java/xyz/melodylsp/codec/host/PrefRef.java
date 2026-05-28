@@ -275,7 +275,58 @@ public final class PrefRef {
     /** Calls {@code getPreferenceCount()} on a screen / category. */
     public static int getPreferenceCount(Object container) {
         Object r = invoke(container, "getPreferenceCount", new Class[0], new Object[0]);
-        return r instanceof Integer ? (Integer) r : 0;
+        if (r instanceof Integer) return (Integer) r;
+        // Fallback: PreferenceGroup keeps its children in a List field. Read that list's size.
+        java.util.List<?> children = getChildrenList(container);
+        return children != null ? children.size() : 0;
+    }
+
+    /**
+     * Calls {@code getPreference(int)} on a screen / category. Falls back to a children-list
+     * field scan if R8 stripped the public method name. Returns {@code null} if both paths
+     * fail.
+     */
+    public static Object getPreference(Object container, int index) {
+        Object r = invoke(container, "getPreference",
+                new Class[]{int.class}, new Object[]{index});
+        if (r != null) return r;
+        java.util.List<?> list = getChildrenList(container);
+        if (list != null && index >= 0 && index < list.size()) {
+            return list.get(index);
+        }
+        return null;
+    }
+
+    /**
+     * Returns the children {@code List<Preference>} that {@code PreferenceGroup} maintains
+     * (decompiled name {@code f10496c}). Identified by being the only {@code List} field on the
+     * group whose contents look Preference-shaped (have a {@code getKey} accessor).
+     */
+    private static java.util.List<?> getChildrenList(Object container) {
+        if (container == null) return null;
+        Class<?> cls = container.getClass();
+        while (cls != null && cls != Object.class) {
+            for (java.lang.reflect.Field f : cls.getDeclaredFields()) {
+                if (!java.util.List.class.isAssignableFrom(f.getType())) continue;
+                try {
+                    f.setAccessible(true);
+                    Object v = f.get(container);
+                    if (!(v instanceof java.util.List)) continue;
+                    java.util.List<?> list = (java.util.List<?>) v;
+                    if (list.isEmpty()) {
+                        // Empty list could still be the children list (no items added yet).
+                        // Remember and keep looking; a non-empty Preference list wins.
+                        // For now skip empty so we don't false-positive on an unrelated list.
+                        continue;
+                    }
+                    Object first = list.get(0);
+                    if (looksLikePreference(first)) return list;
+                } catch (Throwable ignored) {
+                }
+            }
+            cls = cls.getSuperclass();
+        }
+        return null;
     }
 
     /** Calls {@link androidx.preference.ListPreference#setEntries(CharSequence[])}. */

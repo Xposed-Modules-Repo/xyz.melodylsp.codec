@@ -145,17 +145,35 @@ public final class HostHookInstaller {
         if (PrefRef.findPreference(screen, "melody_codec_lsp_category") != null) {
             return true;
         }
-        int order = PrefRef.getOrder(hiresCategory) + 1;
+        int hiresOrder = PrefRef.getOrder(hiresCategory);
+        int targetOrder = hiresOrder + 1;
+        // The host puts every Item Class one after another with consecutive orders, so the
+        // slot right below Hi-Res is already occupied. Push every Preference whose order is
+        // >= targetOrder out by one to make room.
+        shiftPreferenceOrders(screen, targetOrder, +1);
         String mac = resolveMacFromActivityIntent(fragment);
         if (mac == null) {
             MLog.w("DetailMain mac unresolved; skip");
             return false;
         }
-        CodecPreferences prefs = CodecBlockBuilder.buildAndInsert(context, screen, order);
+        CodecPreferences prefs = CodecBlockBuilder.buildAndInsert(context, screen, targetOrder);
         if (prefs == null) return false;
         controller.attach(mac, prefs, fragment);
-        MLog.event("detailmain.injected", "mac_len", mac.length(), "order", order);
+        MLog.event("detailmain.injected", "mac_len", mac.length(), "order", targetOrder);
         return true;
+    }
+
+    /** Shifts the {@code order} of every Preference at index >= {@code threshold} by {@code delta}. */
+    private static void shiftPreferenceOrders(Object screen, int threshold, int delta) {
+        int count = PrefRef.getPreferenceCount(screen);
+        for (int i = 0; i < count; i++) {
+            Object pref = PrefRef.getPreference(screen, i);
+            if (pref == null) continue;
+            int order = PrefRef.getOrder(pref);
+            if (order >= threshold) {
+                PrefRef.setOrder(pref, order + delta);
+            }
+        }
     }
 
     private void hookHighAudio() {
