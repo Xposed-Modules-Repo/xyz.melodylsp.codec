@@ -355,12 +355,21 @@ public final class CodecController {
         long[] selectable = snapshot.selectableCodecSpecific1;
         Object q = sub.prefs.qualityOption;
         if (q == null) return;
-        if (selectable == null || selectable.length == 0) {
+        // Hide Quality option for codecs that do not expose quality steps (e.g. SBC default).
+        if (!CodecLabelTable.isQualityCapable(snapshot.activeCodecType)) {
             PrefRef.setVisible(q, false);
             return;
         }
-        // Hide Quality option for codecs that do not expose quality steps (e.g. SBC default).
-        if (!CodecLabelTable.isQualityCapable(snapshot.activeCodecType)) {
+        // AOSP getCodecStatus reports an empty selectableCodecSpecific1 for vendor codecs
+        // whose capability set was not registered with the system codec manager — which is
+        // every OPPO Vendor LHDC variant we know about. Fall back to the protocol-defined
+        // step list (LDAC: 1000/1001/1002, LHDC: V1/V2/V3/V5) so the user still sees the
+        // dropdown. The bridge writes the selected value through to A2DP, and the kernel
+        // accepts it as long as the bits are valid for that vendor codec.
+        if (selectable == null || selectable.length == 0) {
+            selectable = CodecLabelTable.qualityFallback(snapshot.activeCodecType);
+        }
+        if (selectable.length == 0) {
             PrefRef.setVisible(q, false);
             return;
         }
@@ -384,7 +393,15 @@ public final class CodecController {
     }
 
     private void renderSampleRate(CodecSnapshot snapshot, Subscription sub) {
-        int[] rates = CodecSnapshot.decodeSampleRateBits(snapshot.selectableSampleRateMask);
+        int rateMask = snapshot.selectableSampleRateMask;
+        // AOSP also leaves selectableSampleRateMask = 0 for vendor codecs. Fall back to the
+        // sample rates the protocol allows for that codec family. LHDC V5 is the only codec
+        // exposed by this build that goes beyond 96 kHz, so the fallback list is union'd
+        // with the active rate bit so we never hide a working option.
+        if (rateMask == 0 || CodecSnapshot.decodeSampleRateBits(rateMask).length == 0) {
+            rateMask = sampleRateFallbackMask(snapshot.activeCodecType, snapshot.activeSampleRate);
+        }
+        int[] rates = CodecSnapshot.decodeSampleRateBits(rateMask);
         Object r = sub.prefs.sampleRateOption;
         if (r == null) return;
         if (rates.length == 0) {
@@ -407,6 +424,30 @@ public final class CodecController {
         PrefRef.setVisible(r, true);
     }
 
+    /**
+     * Returns the protocol-defined sample-rate mask for {@code codecType} so we can populate
+     * the dropdown when AOSP failed to enumerate it. The mask is union'd with the active
+     * sample-rate bit so the dropdown always at least includes the rate the device is using
+     * right now (otherwise tapping it would dismiss the dialog and re-open showing nothing).
+     */
+    private static int sampleRateFallbackMask(int codecType, int activeRateBit) {
+        int mask = activeRateBit;
+        // Bits — see CodecSnapshot.decodeSampleRateBits.
+        final int B44_1 = 1, B48 = 2, B88_2 = 4, B96 = 8, B176_4 = 16, B192 = 32;
+        if (codecType == CodecLabelTable.CODEC_LDAC) {
+            mask |= B44_1 | B48 | B88_2 | B96;
+        } else if (CodecLabelTable.isLhdc(codecType)) {
+            // LHDC V1/V2/V3 top out at 96 kHz, V5 adds 192 kHz. We do not know the version
+            // from rate-mask alone, so include the entire set the protocol can carry; the
+            // bridge will reject anything the kernel does not actually accept.
+            mask |= B44_1 | B48 | B88_2 | B96 | B192;
+        } else {
+            // Generic SBC / AAC / aptX cover at least 44.1k and 48k.
+            mask |= B44_1 | B48;
+        }
+        return mask;
+    }
+
     private static int sampleRateBitToHz(int bit) {
         int[] decoded = CodecSnapshot.decodeSampleRateBits(bit);
         if (decoded.length != 1 || decoded[0] <= 0) return -1;
@@ -418,6 +459,18 @@ public final class CodecController {
         try {
             hz = Integer.parseInt(storedValue);
         } catch (NumberFormatException e) {
+            return -1;
+        }
+        // If the platform did not report a selectable mask (vendor codec quirk), accept any
+        // standard-rate value the user picked. The kernel will reject impossible writes, the
+        // bridge will then time out and we will roll back. This is symmetric with the
+        // renderSampleRate fallback that populates the dropdown the same way.
+        if (selectableMask == 0) {
+            int[] knownBits = {0x1, 0x2, 0x4, 0x8, 0x10, 0x20};
+            int[] knownHz = {44100, 48000, 88200, 96000, 176400, 192000};
+            for (int i = 0; i < knownHz.length; i++) {
+                if (knownHz[i] == hz) return knownBits[i];
+            }
             return -1;
         }
         int[] supported = CodecSnapshot.decodeSampleRateBits(selectableMask);

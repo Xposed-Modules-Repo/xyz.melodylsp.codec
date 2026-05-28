@@ -153,10 +153,15 @@ public final class HostHookInstaller {
                 MLog.e("Surface dispatch failed", t);
                 return;
             }
-            if (attempt < 8) {
+            // PreferenceScreen items can be added asynchronously over many seconds (the
+            // WhitelistConfig pipeline involves a network round-trip on first launch). Keep
+            // retrying for ~15 s with a longer back-off than before.
+            if (attempt < 14) {
                 scheduleSurfaceDispatch(fragment, attempt + 1);
+            } else {
+                MLog.w("surface anchor not found after retries; class=" + fragment.getClass().getName());
             }
-        }, attempt == 0 ? 200L : 800L);
+        }, attempt == 0 ? 200L : 1000L);
     }
 
     /**
@@ -280,21 +285,28 @@ public final class HostHookInstaller {
         if (onViewCreated == null) return;
         module.hook(onViewCreated).intercept(chain -> {
             Object result = chain.proceed();
-            // The base-class hook will already cover this fragment via dispatchSurface, so
-            // there is nothing extra to do here. Kept hooked so future surface evolution stays
-            // observable from one place.
+            Object fragment = chain.getThisObject();
+            // HighAudioPreferenceFragment may or may not inherit com.oplus.melody.ui.base.c;
+            // dispatch via the same surface code so it works either way.
+            scheduleSurfaceDispatch(fragment, /* attempt= */ 0);
             return result;
         });
     }
 
     private void hookOneSpace() {
+        // OneSpaceListFragment (com.oplus.melody.onespace.d) extends
+        // com.coui.appcompat.preference.h directly — NOT com.oplus.melody.ui.base.c — so the
+        // base-class hook does not cover it. Hook OneSpace explicitly.
         Class<?> fragCls = loadHostClass(CLASS_ONE_SPACE_FRAGMENT);
         if (fragCls == null) return;
         Method onViewCreated = findOnViewCreated(fragCls);
         if (onViewCreated == null) return;
-        // Dispatch is handled by hookBasePreferenceFragment(); keep this hook installed only as
-        // a no-op observer so that future host evolution keeps a single owning installer.
-        module.hook(onViewCreated).intercept(chain -> chain.proceed());
+        module.hook(onViewCreated).intercept(chain -> {
+            Object result = chain.proceed();
+            Object fragment = chain.getThisObject();
+            scheduleSurfaceDispatch(fragment, /* attempt= */ 0);
+            return result;
+        });
     }
 
     /**

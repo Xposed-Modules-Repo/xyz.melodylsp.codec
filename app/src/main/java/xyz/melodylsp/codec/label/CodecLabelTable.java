@@ -80,6 +80,35 @@ public final class CodecLabelTable {
         }
     }
 
+    /**
+     * Quality steps the LDAC protocol allows (codecSpecific1 = 1000/1001/1002 = HIGH/MID/LOW).
+     * Used as a fallback when {@code BluetoothA2dp.getCodecStatus} reports an empty
+     * {@code selectableCodecSpecific1} array — which AOSP does for every vendor codec where
+     * the vendor stack did not bother to register the capability set with the codec manager.
+     */
+    public static final long[] LDAC_QUALITY_STEPS = {
+            LDAC_QUALITY_HIGH, LDAC_QUALITY_MID, LDAC_QUALITY_LOW
+    };
+
+    /**
+     * Quality steps the LHDC family supports per the Savitech vendor specification. The
+     * version is encoded in the low byte of codecSpecific1; high bits are vendor extensions
+     * (e.g. lossless toggle) we do not surface yet.
+     */
+    public static final long[] LHDC_QUALITY_STEPS = {
+            LHDC_V1, LHDC_V2, LHDC_V3, LHDC_V5
+    };
+
+    /** Returns the protocol-defined quality steps for {@code codecType} when the platform
+     * cannot enumerate them through {@code getCodecStatus}. Empty array means the codec does
+     * not expose adjustable quality (e.g. SBC, AAC, OPUS).
+     */
+    public static long[] qualityFallback(int codecType) {
+        if (codecType == CODEC_LDAC) return LDAC_QUALITY_STEPS.clone();
+        if (isLhdc(codecType)) return LHDC_QUALITY_STEPS.clone();
+        return new long[0];
+    }
+
     /** Returns true when the codec id is one of the LDAC / LHDC family that exposes quality steps. */
     public static boolean isQualityCapable(int codecType) {
         if (codecType == CODEC_LDAC || codecType == CODEC_LHDC) return true;
