@@ -42,33 +42,48 @@ public final class CodecBlockBuilder {
     }
 
     /**
-     * Insert the codec block into {@code container} at the position {@code order}. The
-     * returned {@link CodecPreferences} bag still has a {@code codecDisplay} field — kept
-     * non-null and pointing at the category itself so callers can call
-     * {@code PrefRef.setTitle} on it to update the merged "{@code 蓝牙音质 · LHDC}" header
-     * without touching the rest of the controller.
+     * Insert the codec block into {@code container} at the position {@code order}.
      *
-     * <p>{@code styleSource} is the screen / parent group we mine for visual style siblings.
-     * Pass the same screen the codec block is being added to — every Preference picked up
-     * via the screen's children list contributes its layout / widget layout.</p>
+     * <p>{@code wrapInCategory} controls whether to wrap the items in a
+     * {@code PreferenceCategory}. DetailMain wants the wrapper because the surrounding screen
+     * paints PreferenceCategory groups as visually distinct white cards. OneSpace does not —
+     * the OneSpace bottom-sheet renders extra padding above each Category which throws off
+     * the layout (the user reports a too-large gap between the existing "通用设置" card and
+     * the codec block); flattening the items as siblings of the existing top-level
+     * Preferences lets them inherit the same visual treatment.</p>
+     *
+     * <p>The returned {@link CodecPreferences} bag still has a {@code codecDisplay} field —
+     * for the wrapped variant it points at the category, for the flat variant it points at
+     * the first non-null Preference (quality / sampleRate / remember in that order). Either
+     * way {@code PrefRef.setTitle} on it will refresh the merged "{@code 蓝牙音质 · LHDC}"
+     * header. The flat variant uses the first Preference's title as the header.</p>
      */
-    public static CodecPreferences buildAndInsert(Context context, Object container, int order) {
+    public static CodecPreferences buildAndInsert(
+            Context context, Object container, int order, boolean wrapInCategory) {
         Object styleSource = container;
         Object categoryTemplate = findFirstOfType(styleSource, "PreferenceCategory");
         Object listTemplate = findFirstOfType(styleSource, "ListPreference");
         Object switchTemplate = findFirstOfType(styleSource, "SwitchPreference");
+        if (switchTemplate == null) switchTemplate = findFirstOfType(styleSource, "Preference");
 
-        Object category = newOf(context,
-                MELODY_PREFERENCE_CATEGORY, COUI_PREFERENCE_CATEGORY, ANDX_PREFERENCE_CATEGORY);
-        if (category == null) {
-            MLog.e("buildAndInsert: cannot resolve PreferenceCategory");
-            return null;
+        Object category = null;
+        Object insertionParent = container;
+        int firstChildOrder = order;
+        if (wrapInCategory) {
+            category = newOf(context,
+                    MELODY_PREFERENCE_CATEGORY, COUI_PREFERENCE_CATEGORY, ANDX_PREFERENCE_CATEGORY);
+            if (category == null) {
+                MLog.e("buildAndInsert: cannot resolve PreferenceCategory");
+                return null;
+            }
+            cloneVisualStyleFrom(category, categoryTemplate);
+            PrefRef.setKey(category, "melody_codec_lsp_category");
+            PrefRef.setTitle(category, Strings.CODEC_BLOCK_TITLE);
+            PrefRef.setOrder(category, order);
+            PrefRef.addPreference(container, category);
+            insertionParent = category;
+            firstChildOrder = 0; // children of a Category are positioned by their own order.
         }
-        cloneVisualStyleFrom(category, categoryTemplate);
-        PrefRef.setKey(category, "melody_codec_lsp_category");
-        PrefRef.setTitle(category, Strings.CODEC_BLOCK_TITLE);
-        PrefRef.setOrder(category, order);
-        PrefRef.addPreference(container, category);
 
         Object quality = newOf(context, COUI_LIST_PREFERENCE, ANDX_LIST_PREFERENCE);
         if (quality == null) {
@@ -80,7 +95,8 @@ public final class CodecBlockBuilder {
             PrefRef.setVisible(quality, false);
             PrefRef.setIconSpaceReserved(quality, false);
             PrefRef.setPersistent(quality, false);
-            PrefRef.addPreference(category, quality);
+            PrefRef.setOrder(quality, firstChildOrder);
+            PrefRef.addPreference(insertionParent, quality);
         }
 
         Object sampleRate = newOf(context, COUI_LIST_PREFERENCE, ANDX_LIST_PREFERENCE);
@@ -91,7 +107,8 @@ public final class CodecBlockBuilder {
             PrefRef.setVisible(sampleRate, false);
             PrefRef.setIconSpaceReserved(sampleRate, false);
             PrefRef.setPersistent(sampleRate, false);
-            PrefRef.addPreference(category, sampleRate);
+            PrefRef.setOrder(sampleRate, firstChildOrder + 1);
+            PrefRef.addPreference(insertionParent, sampleRate);
         }
 
         Object remember = newOf(context, COUI_SWITCH_PREFERENCE, ANDX_SWITCH_PREFERENCE_COMPAT);
@@ -102,11 +119,30 @@ public final class CodecBlockBuilder {
             PrefRef.setSummary(remember, Strings.REMEMBER_TOGGLE_SUMMARY);
             PrefRef.setIconSpaceReserved(remember, false);
             PrefRef.setPersistent(remember, false);
-            PrefRef.addPreference(category, remember);
+            PrefRef.setOrder(remember, firstChildOrder + 2);
+            PrefRef.addPreference(insertionParent, remember);
         }
 
-        MLog.event("codec_block.inserted", "order", order);
-        return new CodecPreferences(category, /* codecDisplay= */ category, quality, sampleRate, remember);
+        // codecDisplay holds whichever Preference the controller will mutate to refresh the
+        // "蓝牙音质 · LHDC" header. With a category wrapper it's the category itself; in the
+        // flat layout it's the first child.
+        Object codecDisplay;
+        if (category != null) {
+            codecDisplay = category;
+        } else if (quality != null) {
+            codecDisplay = quality;
+        } else if (sampleRate != null) {
+            codecDisplay = sampleRate;
+        } else {
+            codecDisplay = remember;
+        }
+        MLog.event("codec_block.inserted", "order", order, "wrapped", wrapInCategory);
+        return new CodecPreferences(category, codecDisplay, quality, sampleRate, remember);
+    }
+
+    /** Convenience overload retaining wrap-in-category behaviour for older callers. */
+    public static CodecPreferences buildAndInsert(Context context, Object container, int order) {
+        return buildAndInsert(context, container, order, /* wrapInCategory= */ true);
     }
 
     /** Copy {@code layoutResource} and {@code widgetLayoutResource} from {@code from} to {@code to}. */

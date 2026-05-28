@@ -254,6 +254,8 @@ public final class CodecController {
                 case CONFIRMED:
                     if (result.path == WriteResult.Path.SETTINGS_GLOBAL) {
                         Toast.makeText(context, Strings.BANNER_VIA_SETTINGS, Toast.LENGTH_LONG).show();
+                    } else if (result.path == WriteResult.Path.ROOT_SHELL) {
+                        Toast.makeText(context, Strings.BANNER_VIA_ROOT, Toast.LENGTH_LONG).show();
                     }
                     if (prefs.isRemembered(sub.mac)) {
                         prefs.writeSnapshot(sub.mac, request.codecSpecific1, request.sampleRate);

@@ -388,38 +388,74 @@ public final class PrefRef {
     }
 
     /**
-     * Calls {@link androidx.preference.ListPreference#setEntries(CharSequence[])}.
+     * Sets the {@code mEntries} field on a {@link androidx.preference.ListPreference}.
      *
-     * <p>The host APK is R8-minified and the public {@code setEntries} method has been renamed
-     * (typically to a single character). When the literal-name lookup fails we fall back to
-     * picking the unique 1-arg method on the class hierarchy whose only parameter type is
-     * {@code CharSequence[]} — there are exactly two such setters on {@code ListPreference}
-     * ({@code setEntries} and {@code setEntryValues}), distinguished by their declaration
-     * order, so we tag them by index. Returns silently on failure.</p>
+     * <p>R8 in minify mode strips both {@code setEntries(CharSequence[])} and
+     * {@code setEntryValues(CharSequence[])} from the host APK because the host itself only
+     * ever populates list preferences from XML attributes, never programmatically. The
+     * methods are gone — we cannot reflect against them. The backing fields, however, are
+     * read by {@code ListPreference.onSetInitialValue} and the dialog fragment, so R8 keeps
+     * them (renamed to short names like {@code a}, {@code b}). We pick them out by type:
+     * the first {@code CharSequence[]} field on the class hierarchy is {@code mEntries},
+     * the second is {@code mEntryValues}.</p>
      */
     public static void setEntries(Object listPref, CharSequence[] entries) {
-        if (invokeVoidStrict(listPref, "setEntries",
-                new Class[]{CharSequence[].class}, new Object[]{entries})) return;
-        Method m = findCharSequenceArraySetter(listPref.getClass(), /* secondMatch= */ false);
-        invokeAccessible(listPref, m, entries, "setEntries");
+        if (writeFieldByType(listPref, CharSequence[].class, /* skip */ 0, entries, "mEntries")) return;
+        xyz.melodylsp.codec.util.MLog.w("setEntries: cannot locate CharSequence[] field on "
+                + listPref.getClass().getName());
     }
 
-    /** Calls {@link androidx.preference.ListPreference#setEntryValues(CharSequence[])}. */
     public static void setEntryValues(Object listPref, CharSequence[] values) {
-        if (invokeVoidStrict(listPref, "setEntryValues",
-                new Class[]{CharSequence[].class}, new Object[]{values})) return;
-        Method m = findCharSequenceArraySetter(listPref.getClass(), /* secondMatch= */ true);
-        invokeAccessible(listPref, m, values, "setEntryValues");
+        if (writeFieldByType(listPref, CharSequence[].class, /* skip */ 1, values, "mEntryValues")) return;
+        xyz.melodylsp.codec.util.MLog.w("setEntryValues: cannot locate CharSequence[] field on "
+                + listPref.getClass().getName());
     }
 
-    /** Calls {@link androidx.preference.ListPreference#setValue(String)}. */
+    /**
+     * Writes {@code mValue} on a {@link androidx.preference.ListPreference}. R8 keeps the
+     * {@code mValue} field because the dialog fragment reads it; we locate it as the
+     * unique {@code String}-typed instance field on the ListPreference declaring class.
+     */
     public static void setValue(Object listPref, String value) {
-        if (invokeVoidStrict(listPref, "setValue",
-                new Class[]{String.class}, new Object[]{value})) return;
-        // R8 may have also renamed setValue. Pick the only 1-arg String setter that returns
-        // void — but skip setKey by name (keeps "setKey" stable across this code path).
-        Method m = findUnaryStringSetterExcluding(listPref.getClass(), "setKey");
-        invokeAccessible(listPref, m, value, "setValue");
+        if (writeFieldByType(listPref, String.class, /* skip */ 0, value, "mValue")) return;
+        xyz.melodylsp.codec.util.MLog.w("setValue: cannot locate String field on "
+                + listPref.getClass().getName());
+    }
+
+    /**
+     * Walk the class hierarchy and find the {@code skipMatches}-th instance field whose type
+     * is exactly {@code fieldType}. Returns true on successful write.
+     */
+    private static boolean writeFieldByType(Object target, Class<?> fieldType, int skipMatches,
+            Object value, String label) {
+        if (target == null) return false;
+        int seen = 0;
+        Class<?> cls = target.getClass();
+        while (cls != null && cls != Object.class) {
+            java.lang.reflect.Field[] fields = cls.getDeclaredFields();
+            // Sort by name so the choice is stable across reflection invocations.
+            java.util.Arrays.sort(fields,
+                    (a, b) -> a.getName().compareTo(b.getName()));
+            for (java.lang.reflect.Field f : fields) {
+                if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                if (f.getType() != fieldType) continue;
+                if (seen == skipMatches) {
+                    try {
+                        f.setAccessible(true);
+                        f.set(target, value);
+                        return true;
+                    } catch (Throwable t) {
+                        xyz.melodylsp.codec.util.MLog.w(label
+                                + " field write failed on "
+                                + target.getClass().getName(), t);
+                        return false;
+                    }
+                }
+                seen++;
+            }
+            cls = cls.getSuperclass();
+        }
+        return false;
     }
 
     private static void invokeAccessible(Object target, Method m, Object arg, String label) {

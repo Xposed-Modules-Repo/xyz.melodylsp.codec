@@ -8,7 +8,9 @@ public final class WriteResult {
     public enum Path {
         DIRECT_API,
         SYSTEM_BRIDGE,
-        SETTINGS_GLOBAL
+        SETTINGS_GLOBAL,
+        /** {@code su} → {@code cmd settings put global …} + bluetooth toggle. */
+        ROOT_SHELL
     }
 
     public enum Outcome {

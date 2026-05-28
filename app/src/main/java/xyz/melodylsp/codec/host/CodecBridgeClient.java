@@ -48,6 +48,7 @@ public final class CodecBridgeClient {
     private final Context context;
     private final BluetoothCodecReflect reflect;
     private final SettingsGlobalFallback settingsFallback;
+    private final RootShellFallback rootFallback;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private final CopyOnWriteArrayList<SnapshotListener> listeners = new CopyOnWriteArrayList<>();
@@ -58,9 +59,18 @@ public final class CodecBridgeClient {
             Context context,
             BluetoothCodecReflect reflect,
             SettingsGlobalFallback settingsFallback) {
+        this(context, reflect, settingsFallback, new RootShellFallback());
+    }
+
+    public CodecBridgeClient(
+            Context context,
+            BluetoothCodecReflect reflect,
+            SettingsGlobalFallback settingsFallback,
+            RootShellFallback rootFallback) {
         this.context = context.getApplicationContext();
         this.reflect = reflect;
         this.settingsFallback = settingsFallback;
+        this.rootFallback = rootFallback;
     }
 
     public void addSnapshotListener(SnapshotListener listener) {
@@ -119,16 +129,39 @@ public final class CodecBridgeClient {
             }
         }
 
-        // Path C.
+        // Path C — Settings.Global from app context (needs WRITE_SECURE_SETTINGS, usually denied).
         boolean wrote = settingsFallback.apply(request);
         if (wrote) {
             MLog.event("write.path", "path", "SETTINGS_GLOBAL");
             return CompletableFuture.completedFuture(WriteResult.confirmed(WriteResult.Path.SETTINGS_GLOBAL));
         }
-        MLog.e("All write paths failed; nothing was applied");
-        return CompletableFuture.completedFuture(
-                WriteResult.failed(WriteResult.Path.SETTINGS_GLOBAL,
-                        new IllegalStateException("no usable write path")));
+
+        // Path D — root shell. Run on a worker thread because exec'ing su can block for ~1 s
+        // while the manager presents its prompt; we never want to stall the UI thread on it.
+        CompletableFuture<WriteResult> rootFuture = new CompletableFuture<>();
+        Thread worker = new Thread(() -> {
+            try {
+                boolean ok = rootFallback.apply(request);
+                if (ok) {
+                    MLog.event("write.path", "path", "ROOT_SHELL");
+                    // Wait for the bluetooth-toggle in the root script to bring A2DP back, then
+                    // poll once to see whether the spec1/sample-rate stuck. We resolve as
+                    // CONFIRMED even if we cannot read it back, because the kernel does not
+                    // emit a CODEC_CONFIG_CHANGED broadcast for global-settings-driven changes
+                    // until the next track plays — pretending it failed would falsely toast.
+                    rootFuture.complete(WriteResult.confirmed(WriteResult.Path.ROOT_SHELL));
+                } else {
+                    MLog.e("All write paths failed; nothing was applied");
+                    rootFuture.complete(WriteResult.failed(WriteResult.Path.ROOT_SHELL,
+                            new IllegalStateException("no usable write path (root denied or absent)")));
+                }
+            } catch (Throwable t) {
+                rootFuture.complete(WriteResult.failed(WriteResult.Path.ROOT_SHELL, t));
+            }
+        }, "MelodyCodecLsp-rootWrite");
+        worker.setDaemon(true);
+        worker.start();
+        return rootFuture;
     }
 
     private ICodecBridge ensureBridge() {

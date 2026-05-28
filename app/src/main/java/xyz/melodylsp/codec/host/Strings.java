@@ -26,6 +26,7 @@ public final class Strings {
     public static final String STATE_VERSION_UNCALIBRATED = "面板版本未校准，部分功能可能受限";
 
     public static final String BANNER_VIA_SETTINGS = "已通过开发者选项写入，可能需要重连耳机生效";
+    public static final String BANNER_VIA_ROOT = "已通过 root 写入开发者选项，蓝牙正在重连";
     public static final String TOAST_APPLY_FAILED = "切换未生效，请重试";
 
     public static final String FRESHNESS_LABEL_FORMAT = "上次同步：%s";

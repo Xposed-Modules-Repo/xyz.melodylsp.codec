@@ -254,7 +254,10 @@ public final class HostHookInstaller {
             MLog.w("OneSpace mac unresolved; skip");
             return false;
         }
-        CodecPreferences prefs = CodecBlockBuilder.buildAndInsert(themedContext, screen, targetOrder);
+        // OneSpace renders extra padding around every PreferenceCategory; nesting a wrapper
+        // pushes the toggle off-screen. Flatten the items as siblings of pref_more_setting.
+        CodecPreferences prefs = CodecBlockBuilder.buildAndInsert(
+                themedContext, screen, targetOrder, /* wrapInCategory= */ false);
         if (prefs == null) return false;
         controller.attach(mac, prefs, fragment);
         attachedFragments.add(fragment);
