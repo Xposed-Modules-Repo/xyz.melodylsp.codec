@@ -323,7 +323,11 @@ public final class HostHookInstaller {
      *
      * <p>{@code androidx.preference.PreferenceFragmentCompat} keeps the RecyclerView in field
      * {@code mList} (renamed by R8). We locate it by walking the fragment's {@code View} tree
-     * looking for the only {@link androidx.recyclerview.widget.RecyclerView} child.</p>
+     * looking for the only {@code RecyclerView}-shaped child. We type the result as
+     * {@link android.view.View} on purpose — the module APK does not depend on
+     * {@code androidx.recyclerview} (the host ships its own copy that R8 has minified), so
+     * compile-time references to the class fail to build. {@code setPadding} /
+     * {@code setClipToPadding} are inherited from {@link android.view.ViewGroup}.</p>
      */
     private static void addRecyclerBottomPadding(Object fragment, int extraPx) {
         try {
@@ -335,30 +339,45 @@ public final class HostHookInstaller {
             } catch (Throwable ignored) {
             }
             if (root == null) return;
-            androidx.recyclerview.widget.RecyclerView rv = findRecyclerView(root);
-            if (rv == null) return;
-            int currentBottom = rv.getPaddingBottom();
+            android.view.View rv = findRecyclerView(root);
+            if (!(rv instanceof android.view.ViewGroup)) return;
+            android.view.ViewGroup group = (android.view.ViewGroup) rv;
+            int currentBottom = group.getPaddingBottom();
             // Idempotency guard: if already padded enough, skip.
             if (currentBottom >= extraPx) return;
-            rv.setClipToPadding(false);
-            rv.setPadding(rv.getPaddingLeft(), rv.getPaddingTop(),
-                    rv.getPaddingRight(), currentBottom + extraPx);
+            group.setClipToPadding(false);
+            group.setPadding(group.getPaddingLeft(), group.getPaddingTop(),
+                    group.getPaddingRight(), currentBottom + extraPx);
         } catch (Throwable t) {
             MLog.w("addRecyclerBottomPadding failed", t);
         }
     }
 
-    private static androidx.recyclerview.widget.RecyclerView findRecyclerView(android.view.View root) {
-        if (root instanceof androidx.recyclerview.widget.RecyclerView) {
-            return (androidx.recyclerview.widget.RecyclerView) root;
-        }
+    /**
+     * Recursively walk the view tree returning the first descendant whose runtime class is
+     * {@code androidx.recyclerview.widget.RecyclerView} (or anything that extends it). We
+     * detect it by class-name string match instead of {@code instanceof} because the module
+     * APK does not have RecyclerView on its classpath.
+     */
+    private static android.view.View findRecyclerView(android.view.View root) {
+        if (root == null) return null;
+        if (isRecyclerViewClass(root.getClass())) return root;
         if (!(root instanceof android.view.ViewGroup)) return null;
         android.view.ViewGroup group = (android.view.ViewGroup) root;
         for (int i = 0; i < group.getChildCount(); i++) {
-            androidx.recyclerview.widget.RecyclerView found = findRecyclerView(group.getChildAt(i));
+            android.view.View found = findRecyclerView(group.getChildAt(i));
             if (found != null) return found;
         }
         return null;
+    }
+
+    private static boolean isRecyclerViewClass(Class<?> cls) {
+        Class<?> cur = cls;
+        while (cur != null && cur != Object.class) {
+            if ("androidx.recyclerview.widget.RecyclerView".equals(cur.getName())) return true;
+            cur = cur.getSuperclass();
+        }
+        return false;
     }
 
     private static int dpToPx(Context context, int dp) {
