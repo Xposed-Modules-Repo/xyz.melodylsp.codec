@@ -18,6 +18,7 @@ import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.PopupWindow;
 import android.widget.TextView;
@@ -268,24 +269,35 @@ public final class CodecController {
             ChoiceCallback callback) {
         Activity activity = resolveLiveActivity(sub);
         if (activity == null || activity.getWindow() == null) return;
-        View root = activity.getWindow().getDecorView();
-        if (root == null) return;
         Context popupContext = dialogContext != null ? dialogContext : activity;
-        View anchor = findPreferenceView(activity, sourcePref);
+        View anchor = findPreferenceView(sub, activity, sourcePref);
+        View root = anchor != null ? anchor.getRootView() : fragmentRootView(sub.fragment);
+        if (root == null) root = activity.getWindow().getDecorView();
+        if (root == null) return;
 
         final PopupWindow[] popupRef = new PopupWindow[1];
+        FrameLayout shell = new FrameLayout(popupContext);
+        shell.setClipToPadding(false);
+        shell.setClipChildren(false);
+        int shadowPad = dp(popupContext, 8);
+        shell.setPadding(shadowPad, shadowPad, shadowPad, shadowPad);
+
         LinearLayout list = new LinearLayout(popupContext);
         list.setOrientation(LinearLayout.VERTICAL);
-        int horizontal = dp(popupContext, 18);
-        int rowHeight = dp(popupContext, 54);
+        int horizontal = dp(popupContext, 16);
+        int rowHeight = dp(popupContext, 50);
         int blue = Color.rgb(0, 105, 255);
         int textColor = Color.rgb(25, 25, 25);
         int dividerColor = Color.argb(28, 0, 0, 0);
 
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(Color.WHITE);
-        bg.setCornerRadius(dp(dialogContext, 22));
+        bg.setCornerRadius(dp(popupContext, 20));
+        bg.setStroke(Math.max(1, dp(popupContext, 1)), Color.argb(20, 0, 0, 0));
         list.setBackground(bg);
+        if (Build.VERSION.SDK_INT >= 21) {
+            list.setElevation(dp(popupContext, 6));
+        }
 
         for (int i = 0; i < entries.length; i++) {
             final int index = i;
@@ -297,7 +309,7 @@ public final class CodecController {
 
             TextView title = new TextView(popupContext);
             title.setText(entries[i]);
-            title.setTextSize(19);
+            title.setTextSize(17);
             title.setSingleLine(false);
             title.setGravity(Gravity.CENTER_VERTICAL);
             title.setTextColor(i == checked ? blue : textColor);
@@ -307,7 +319,7 @@ public final class CodecController {
             TextView check = new TextView(popupContext);
             check.setText(i == checked ? "\u2713" : "");
             check.setTextColor(blue);
-            check.setTextSize(28);
+            check.setTextSize(26);
             check.setGravity(Gravity.CENTER);
             row.addView(check, new LinearLayout.LayoutParams(
                     dp(popupContext, 40), LinearLayout.LayoutParams.MATCH_PARENT));
@@ -329,18 +341,21 @@ public final class CodecController {
                 list.addView(divider, lp);
             }
         }
+        shell.addView(list, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT));
 
         DisplayMetrics metrics = popupContext.getResources().getDisplayMetrics();
-        int width = Math.min(metrics.widthPixels - dp(popupContext, 48), dp(popupContext, 176));
+        int contentWidth = Math.min(metrics.widthPixels - dp(popupContext, 48), dp(popupContext, 176));
+        int width = contentWidth + shadowPad * 2;
         PopupWindow popup = new PopupWindow(
-                list, width, LinearLayout.LayoutParams.WRAP_CONTENT, true);
+                shell, width, LinearLayout.LayoutParams.WRAP_CONTENT, true);
         popupRef[0] = popup;
         popup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         popup.setOutsideTouchable(true);
         popup.setClippingEnabled(true);
         popup.setInputMethodMode(PopupWindow.INPUT_METHOD_NOT_NEEDED);
         if (Build.VERSION.SDK_INT >= 21) {
-            popup.setElevation(dp(popupContext, 10));
+            popup.setElevation(dp(popupContext, 14));
         }
         int x = metrics.widthPixels - width - dp(popupContext, 40);
         int y = Math.round(metrics.heightPixels * 0.38f);
@@ -349,9 +364,10 @@ public final class CodecController {
             anchor.getLocationInWindow(loc);
             x = Math.max(dp(popupContext, 16),
                     Math.min(x, metrics.widthPixels - width - dp(popupContext, 16)));
-            y = loc[1] - dp(popupContext, 8);
+            y = loc[1] - dp(popupContext, 8) - shadowPad;
         }
-        int popupHeightEstimate = entries.length * rowHeight + Math.max(0, entries.length - 1);
+        int popupHeightEstimate = entries.length * rowHeight
+                + Math.max(0, entries.length - 1) + shadowPad * 2;
         int minY = dp(popupContext, 96);
         int maxY = Math.max(minY,
                 metrics.heightPixels - popupHeightEstimate - dp(popupContext, 96));
@@ -407,14 +423,20 @@ public final class CodecController {
         return null;
     }
 
-    private static View findPreferenceView(Activity activity, Object pref) {
+    private static View findPreferenceView(Subscription sub, Activity activity, Object pref) {
         if (activity == null || activity.getWindow() == null || pref == null) return null;
-        View root = activity.getWindow().getDecorView();
-        if (root == null) return null;
         CharSequence title = PrefRef.getTitle(pref);
+        View root = fragmentRootView(sub != null ? sub.fragment : null);
         View text = findTextView(root, title);
         if (text == null) {
             text = findTextView(root, PrefRef.getSummary(pref));
+        }
+        if (text == null) {
+            root = activity.getWindow().getDecorView();
+            text = findTextView(root, title);
+            if (text == null) {
+                text = findTextView(root, PrefRef.getSummary(pref));
+            }
         }
         if (text == null) return null;
         DisplayMetrics metrics = activity.getResources().getDisplayMetrics();
@@ -432,6 +454,17 @@ public final class CodecController {
             cur = parent instanceof View ? (View) parent : null;
         }
         return text;
+    }
+
+    private static View fragmentRootView(Object fragment) {
+        if (fragment == null) return null;
+        try {
+            Method m = fragment.getClass().getMethod("getView");
+            Object view = m.invoke(fragment);
+            return view instanceof View ? (View) view : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     private static View findTextView(View root, CharSequence text) {
@@ -738,6 +771,9 @@ public final class CodecController {
             return SAMPLE_RATE_48000_BIT;
         }
         if (isLhdcHighQuality(quality)) {
+            if (isHighQualityRate(snapshot.activeSampleRate)) {
+                return snapshot.activeSampleRate;
+            }
             return preferredHighQualityRate(snapshot);
         }
         return snapshot.activeSampleRate != 0

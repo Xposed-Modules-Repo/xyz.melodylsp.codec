@@ -62,7 +62,7 @@ public final class HostHookInstaller {
     private static final String KEY_CODEC_CATEGORY = "melody_codec_lsp_category";
     private static final String KEY_CODEC_QUALITY = "melody_codec_lsp_quality";
     private static final String KEY_NOISE_SWITCH = "pref_noise_switch";
-    private static final String KEY_NOISE_MENU = "pref_noise_menu";
+    private static final String KEY_NOISE_SWITCH_CATEGORY = "pref_noise_switch_category";
     private static final String KEY_MORE_SETTING = "pref_more_setting";
     private static final String KEY_FOOTER = "footer_preference";
 
@@ -257,6 +257,7 @@ public final class HostHookInstaller {
         Context themedContext = resolveThemedContext(fragment);
         if (themedContext == null) return false;
 
+        Object noiseSwitchCategory = PrefRef.findPreference(screen, KEY_NOISE_SWITCH_CATEGORY);
         Object noiseMenuCategory = PrefRef.findPreference(screen, MelodyResIds.KEY_NOISE_MENU_CATEGORY);
         Object noiseSwitch = PrefRef.findPreference(screen, KEY_NOISE_SWITCH);
         Object moreSettingCategory = PrefRef.findPreference(
@@ -268,16 +269,26 @@ public final class HostHookInstaller {
         }
         Object footer = PrefRef.findPreference(screen, KEY_FOOTER);
 
-        Object noiseSwitchParent = noiseSwitch != null ? PrefRef.getParent(noiseSwitch) : null;
-        Object anchor = noiseSwitch != null && noiseSwitchParent == screen
-                ? noiseSwitch
-                : moreSettingCategory != null ? moreSettingCategory : footer;
+        Object anchor = null;
+        boolean insertAfterAnchor = false;
+        if (noiseMenuCategory != null && PrefRef.isVisible(noiseMenuCategory)) {
+            anchor = noiseMenuCategory;
+            insertAfterAnchor = true;
+        } else if (noiseSwitchCategory != null && PrefRef.isVisible(noiseSwitchCategory)) {
+            anchor = noiseSwitchCategory;
+            insertAfterAnchor = true;
+        } else if (noiseSwitch != null && PrefRef.isVisible(noiseSwitch)) {
+            anchor = noiseSwitch;
+            insertAfterAnchor = true;
+        } else if (moreSettingCategory != null) {
+            anchor = moreSettingCategory;
+        } else {
+            anchor = footer;
+        }
         int targetOrder;
         if (anchor != null) {
             int anchorOrder = PrefRef.getOrder(anchor);
-            targetOrder = Math.max(0, anchor == noiseSwitch ? anchorOrder + 1 : anchorOrder);
-        } else if (noiseMenuCategory != null) {
-            targetOrder = PrefRef.getOrder(noiseMenuCategory) + 1;
+            targetOrder = Math.max(0, anchorOrder + (insertAfterAnchor ? 1 : 0));
         } else {
             targetOrder = PrefRef.getPreferenceCount(screen);
         }
@@ -286,26 +297,18 @@ public final class HostHookInstaller {
             MLog.w("OneSpace mac unresolved; skip");
             return false;
         }
-        Object insertionParent = noiseMenuCategory != null ? noiseMenuCategory : screen;
-        if (insertionParent == noiseMenuCategory) {
-            PrefRef.setVisible(noiseMenuCategory, true);
-            setCategoryTopMarginZero(noiseMenuCategory);
-            Object noiseMenuRow = PrefRef.findPreference(noiseMenuCategory, KEY_NOISE_MENU);
-            PrefRef.setVisible(noiseMenuRow, false);
-            targetOrder = 0;
-            shiftPreferenceOrders(insertionParent, targetOrder, +3);
-        } else {
-            shiftPreferenceOrders(screen, targetOrder, +3);
-        }
-        // OneSpace is for instant switching only: use top-level rows and skip the remember
-        // toggle. Persistence is owned by DetailMain's panel.
+        shiftPreferenceOrders(screen, targetOrder, +1);
+        // OneSpace is for instant switching only. Keep it in a visible Category so COUI owns
+        // the card background; the hidden noise-menu Category renders as bare rows here.
         CodecPreferences prefs = CodecBlockBuilder.buildAndInsert(
-                themedContext, insertionParent, targetOrder,
-                /* wrapInCategory= */ false, /* includeRemember= */ false);
+                themedContext, screen, targetOrder,
+                /* wrapInCategory= */ true, /* includeRemember= */ false);
         if (prefs == null) return false;
+        setCategoryTopMarginZero(prefs.category);
         controller.attach(mac, prefs, fragment);
         attachedScreens.add(screen);
-        MLog.event("onespace.injected", "mac_len", mac.length(), "order", targetOrder);
+        MLog.event("onespace.injected", "mac_len", mac.length(), "order", targetOrder,
+                "anchor", anchor != null ? PrefRef.getKey(anchor) : "none");
         return true;
     }
 

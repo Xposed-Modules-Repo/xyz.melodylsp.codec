@@ -14,9 +14,9 @@ import xyz.melodylsp.codec.util.MLog;
  * plain {@code Preference} rows whose click handler is a hand-rolled {@code AlertDialog}
  * (see {@link CodecController#showPickerDialog}). Same UX, none of the R8 fallout.
  *
- * <p>OneSpace gets the items flattened into the screen (no Category wrapper, no remember
- * toggle — that surface is for instant switching, persistence belongs in DetailMain).
- * DetailMain gets the full block wrapped in a Category card.</p>
+ * <p>OneSpace skips the remember toggle — that surface is for instant switching, persistence
+ * belongs in DetailMain. Both surfaces can use a Category wrapper when the host list needs
+ * COUI to own the card background.</p>
  */
 public final class CodecBlockBuilder {
 

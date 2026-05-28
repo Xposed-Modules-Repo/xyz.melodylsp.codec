@@ -97,6 +97,11 @@ public final class PrefRef {
         invokeVoid(pref, "setVisible", new Class[]{boolean.class}, new Object[]{visible});
     }
 
+    public static boolean isVisible(Object pref) {
+        Object r = invoke(pref, "isVisible", new Class[0], new Object[0]);
+        return !(r instanceof Boolean) || (Boolean) r;
+    }
+
     public static void setSelectable(Object pref, boolean selectable) {
         invokeVoid(pref, "setSelectable", new Class[]{boolean.class}, new Object[]{selectable});
     }
