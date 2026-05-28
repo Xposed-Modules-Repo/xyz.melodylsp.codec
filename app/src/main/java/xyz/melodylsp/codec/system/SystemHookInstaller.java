@@ -73,7 +73,11 @@ public final class SystemHookInstaller {
             bridgeService.registerToServiceManager();
             MLog.event("system.bridge.registered");
         } catch (Throwable t) {
-            MLog.e("ensureBridgeRegistered failed", t);
+            // Most ROMs deny ServiceManager.addService from com.android.bluetooth via SELinux.
+            // This is expected; the host-side falls back to the direct A2DP API and finally to
+            // Settings.Global, so failure here is not fatal. Demote to WARN once per process.
+            MLog.w("ensureBridgeRegistered failed (likely SELinux) — host-side fallback will be used");
+            bridgeService = null;
         }
     }
 
