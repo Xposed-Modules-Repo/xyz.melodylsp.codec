@@ -48,10 +48,8 @@ android {
 dependencies {
     // Modern Xposed API. Provided by LSPosed at runtime.
     compileOnly("io.github.libxposed:api:101.0.1")
-    // Provided by the host APK at runtime.
-    compileOnly("androidx.preference:preference:1.2.1")
-    compileOnly("androidx.appcompat:appcompat:1.7.0")
-    compileOnly("androidx.lifecycle:lifecycle-common-java8:2.6.2")
-    compileOnly("androidx.lifecycle:lifecycle-runtime:2.6.2")
+    // androidx.annotation is used inline (@NonNull etc.); we don't compile against
+    // androidx.preference / lifecycle since the host APK ships R8-minified copies and we
+    // route all access through reflection (see PrefRef).
     compileOnly("androidx.annotation:annotation:1.9.1")
 }

@@ -1,36 +1,34 @@
 package xyz.melodylsp.codec.host;
 
 import android.app.Application;
+import android.content.Context;
 import android.content.pm.PackageInfo;
 import android.os.Bundle;
-
-import androidx.lifecycle.LifecycleOwner;
-import androidx.preference.Preference;
-import androidx.preference.PreferenceCategory;
-import androidx.preference.PreferenceFragmentCompat;
-import androidx.preference.PreferenceScreen;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 
-import io.github.libxposed.api.XposedInterface;
 import xyz.melodylsp.codec.MelodyCodecLspEntry;
 import xyz.melodylsp.codec.bt.BluetoothCodecReflect;
 import xyz.melodylsp.codec.storage.PreferenceStore;
 import xyz.melodylsp.codec.util.MLog;
 
 /**
- * Installs all host-side hooks via the modern libxposed {@link XposedInterface}. Each hook
- * lambda is wrapped in try / catch so that a single failure cannot cascade into a host crash
- * (Requirement 9.5 / Property 4 / 6).
+ * Installs all host-side hooks via the modern libxposed API. Each hook lambda is wrapped in
+ * try / catch so that a single failure cannot cascade into a host crash (Requirement 9.5 /
+ * Property 4 / 6).
+ *
+ * <p>None of the {@code androidx.preference} types are referenced through compile-time
+ * symbols. The host App ships androidx.preference but the names are minified, so referencing
+ * them at compile time triggers {@link NoClassDefFoundError} at runtime. Everything goes
+ * through {@link PrefRef} reflection.</p>
  */
 public final class HostHookInstaller {
 
     private static final String CLASS_HIGH_AUDIO =
             "com.oplus.melody.ui.component.detail.highaudio.HighAudioPreferenceFragment";
     private static final String CLASS_ONE_SPACE_FRAGMENT = "com.oplus.melody.onespace.d";
-    private static final String CLASS_HIGH_AUDIO_DETAIL_FRAGMENT = "y8.g";
     private static final String FIELD_HIGH_AUDIO_MAC = "f27613b";
     private static final String FIELD_ONE_SPACE_MAC = "f17198C";
 
@@ -100,7 +98,7 @@ public final class HostHookInstaller {
         module.hook(onCreate).intercept(chain -> {
             Object result = chain.proceed();
             try {
-                insertIntoHighAudio((PreferenceFragmentCompat) chain.getThisObject());
+                insertIntoHighAudio(chain.getThisObject());
             } catch (Throwable t) {
                 MLog.e("HighAudio insertion failed", t);
             }
@@ -124,7 +122,7 @@ public final class HostHookInstaller {
             module.hook(m).intercept(chain -> {
                 Object result = chain.proceed();
                 try {
-                    insertIntoOneSpace((PreferenceFragmentCompat) chain.getThisObject());
+                    insertIntoOneSpace(chain.getThisObject());
                 } catch (Throwable t) {
                     MLog.e("OneSpace insertion failed", t);
                 }
@@ -133,55 +131,65 @@ public final class HostHookInstaller {
         }
     }
 
-    private void insertIntoHighAudio(PreferenceFragmentCompat fragment) {
+    private void insertIntoHighAudio(Object fragment) {
         if (controller == null) {
             MLog.w("HighAudio insertion skipped: controller not ready");
             return;
         }
-        PreferenceScreen screen = fragment.getPreferenceScreen();
+        Context context = resolveContext(fragment);
+        if (context == null) {
+            MLog.w("HighAudio insertion skipped: no context");
+            return;
+        }
+        Object screen = PrefRef.getPreferenceScreen(fragment);
         if (screen == null) {
             MLog.w("HighAudio screen is null");
             return;
         }
-        Preference hires = screen.findPreference(MelodyResIds.KEY_HIRES_SWITCH_CATEGORY);
-        int order = hires != null ? hires.getOrder() + 1 : screen.getPreferenceCount();
+        Object hires = PrefRef.findPreference(screen, MelodyResIds.KEY_HIRES_SWITCH_CATEGORY);
+        int order = hires != null ? PrefRef.getOrder(hires) + 1 : PrefRef.getPreferenceCount(screen);
         String mac = resolveHighAudioMac(fragment);
         if (mac == null) {
             MLog.w("HighAudio mac unresolved; skip");
             return;
         }
-        CodecPreferences prefs =
-                CodecBlockBuilder.buildAndInsert(fragment.requireContext(), screen, order);
-        controller.attach(mac, prefs, (LifecycleOwner) fragment);
+        CodecPreferences prefs = CodecBlockBuilder.buildAndInsert(context, screen, order);
+        if (prefs == null) return;
+        controller.attach(mac, prefs, fragment);
         MLog.event("highaudio.injected", "mac_len", mac.length(), "order", order);
     }
 
-    private void insertIntoOneSpace(PreferenceFragmentCompat fragment) {
+    private void insertIntoOneSpace(Object fragment) {
         if (controller == null) {
             MLog.w("OneSpace insertion skipped: controller not ready");
             return;
         }
-        PreferenceScreen screen = fragment.getPreferenceScreen();
+        Context context = resolveContext(fragment);
+        if (context == null) {
+            MLog.w("OneSpace insertion skipped: no context");
+            return;
+        }
+        Object screen = PrefRef.getPreferenceScreen(fragment);
         if (screen == null) {
             MLog.w("OneSpace screen is null");
             return;
         }
-        Preference noiseMenu = screen.findPreference(MelodyResIds.KEY_NOISE_MENU_CATEGORY);
-        Preference moreSetting = screen.findPreference(MelodyResIds.KEY_MORE_SETTING_CATEGORY);
+        Object noiseMenu = PrefRef.findPreference(screen, MelodyResIds.KEY_NOISE_MENU_CATEGORY);
+        Object moreSetting = PrefRef.findPreference(screen, MelodyResIds.KEY_MORE_SETTING_CATEGORY);
 
         int targetOrder;
         if (noiseMenu != null && moreSetting != null) {
-            int low = Math.min(noiseMenu.getOrder(), moreSetting.getOrder());
-            int high = Math.max(noiseMenu.getOrder(), moreSetting.getOrder());
+            int low = Math.min(PrefRef.getOrder(noiseMenu), PrefRef.getOrder(moreSetting));
+            int high = Math.max(PrefRef.getOrder(noiseMenu), PrefRef.getOrder(moreSetting));
             targetOrder = (low + high) / 2;
             if (targetOrder == low) targetOrder = low + 1;
         } else if (moreSetting != null) {
-            targetOrder = Math.max(0, moreSetting.getOrder() - 1);
+            targetOrder = Math.max(0, PrefRef.getOrder(moreSetting) - 1);
         } else {
-            targetOrder = screen.getPreferenceCount();
+            targetOrder = PrefRef.getPreferenceCount(screen);
         }
-        if (moreSetting instanceof PreferenceCategory && targetOrder >= moreSetting.getOrder()) {
-            moreSetting.setOrder(targetOrder + 1);
+        if (moreSetting != null && targetOrder >= PrefRef.getOrder(moreSetting)) {
+            PrefRef.setOrder(moreSetting, targetOrder + 1);
         }
 
         String mac = resolveOneSpaceMac(fragment);
@@ -189,10 +197,28 @@ public final class HostHookInstaller {
             MLog.w("OneSpace mac unresolved; skip");
             return;
         }
-        CodecPreferences prefs =
-                CodecBlockBuilder.buildAndInsert(fragment.requireContext(), screen, targetOrder);
-        controller.attach(mac, prefs, (LifecycleOwner) fragment);
+        CodecPreferences prefs = CodecBlockBuilder.buildAndInsert(context, screen, targetOrder);
+        if (prefs == null) return;
+        controller.attach(mac, prefs, fragment);
         MLog.event("onespace.injected", "mac_len", mac.length(), "order", targetOrder);
+    }
+
+    /** Calls {@code Fragment.requireContext()} via reflection. */
+    private static Context resolveContext(Object fragment) {
+        try {
+            Method m = fragment.getClass().getMethod("requireContext");
+            Object ctx = m.invoke(fragment);
+            return ctx instanceof Context ? (Context) ctx : null;
+        } catch (Throwable ignored) {
+        }
+        try {
+            Method m = fragment.getClass().getMethod("getContext");
+            Object ctx = m.invoke(fragment);
+            return ctx instanceof Context ? (Context) ctx : null;
+        } catch (Throwable t) {
+            MLog.w("resolveContext failed", t);
+            return null;
+        }
     }
 
     private static String resolveHighAudioMac(Object fragment) {

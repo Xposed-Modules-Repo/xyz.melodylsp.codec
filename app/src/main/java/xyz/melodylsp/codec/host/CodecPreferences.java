@@ -1,25 +1,24 @@
 package xyz.melodylsp.codec.host;
 
-import androidx.preference.ListPreference;
-import androidx.preference.Preference;
-import androidx.preference.PreferenceCategory;
-import androidx.preference.SwitchPreferenceCompat;
-
-/** Bag of references to the four Preferences we own inside a single Codec_Block. */
+/**
+ * Bag of host-side Preference instances we own inside a single Codec_Block. Stored as
+ * {@link Object} because the host APK ships a R8-minified androidx.preference where the
+ * concrete class names are stripped; we never touch them through compile-time symbols.
+ */
 public final class CodecPreferences {
 
-    public final PreferenceCategory category;
-    public final Preference codecDisplay;
-    public final ListPreference qualityOption;
-    public final ListPreference sampleRateOption;
-    public final SwitchPreferenceCompat rememberToggle;
+    public final Object category;
+    public final Object codecDisplay;
+    public final Object qualityOption;
+    public final Object sampleRateOption;
+    public final Object rememberToggle;
 
     public CodecPreferences(
-            PreferenceCategory category,
-            Preference codecDisplay,
-            ListPreference qualityOption,
-            ListPreference sampleRateOption,
-            SwitchPreferenceCompat rememberToggle) {
+            Object category,
+            Object codecDisplay,
+            Object qualityOption,
+            Object sampleRateOption,
+            Object rememberToggle) {
         this.category = category;
         this.codecDisplay = codecDisplay;
         this.qualityOption = qualityOption;

@@ -8,12 +8,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.widget.Toast;
 
-import androidx.lifecycle.DefaultLifecycleObserver;
-import androidx.lifecycle.LifecycleOwner;
-import androidx.preference.ListPreference;
-import androidx.preference.Preference;
-import androidx.preference.SwitchPreferenceCompat;
-
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -33,9 +29,12 @@ import xyz.melodylsp.codec.storage.PreferenceStore;
 import xyz.melodylsp.codec.util.MLog;
 
 /**
- * The single host-side state owner. Each Surface attaches its {@link CodecPreferences} bag, the
+ * Single host-side state owner. Each Surface attaches its {@link CodecPreferences} bag, the
  * controller refreshes UI state from {@code BluetoothA2dp.getCodecStatus} and routes write
  * intents through {@link CodecBridgeClient}.
+ *
+ * <p>Every {@code androidx.preference} access goes through {@link PrefRef} reflection because
+ * the host APK is R8-minified.</p>
  */
 public final class CodecController {
 
@@ -50,7 +49,7 @@ public final class CodecController {
     private final PreferenceStore prefs;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ConnectionStateReplayer replayer;
-    private final Map<LifecycleOwner, Subscription> subscriptions = new HashMap<>();
+    private final Map<Object, Subscription> subscriptions = new HashMap<>();
     private final AtomicReference<CodecSnapshot> lastSnapshot = new AtomicReference<>();
 
     public CodecController(
@@ -67,78 +66,147 @@ public final class CodecController {
         this.bridge.addSnapshotListener(this::onPushedSnapshot);
     }
 
-    /** Bind a {@link CodecPreferences} bag to a lifecycle and refresh on resume. */
-    public void attach(String mac, CodecPreferences pref, LifecycleOwner owner) {
+    /**
+     * Bind a {@link CodecPreferences} bag to a fragment lifecycle. {@code fragment} is the host
+     * Fragment instance; we reflectively call {@code getLifecycle().addObserver(...)} so we
+     * never compile-time-reference {@code LifecycleOwner}.
+     */
+    public void attach(String mac, CodecPreferences pref, Object fragment) {
         Subscription sub = new Subscription(mac, pref);
-        subscriptions.put(owner, sub);
+        subscriptions.put(fragment, sub);
 
         wireListeners(sub);
+        sub.registerReceiver();
+        mainHandler.post(() -> refreshSnapshot(sub));
 
-        owner.getLifecycle().addObserver(new DefaultLifecycleObserver() {
-            @Override
-            public void onStart(LifecycleOwner ownerInner) {
-                sub.registerReceiver();
-                mainHandler.post(() -> refreshSnapshot(sub));
-            }
-
-            @Override
-            public void onStop(LifecycleOwner ownerInner) {
-                sub.unregisterReceiver();
-            }
-
-            @Override
-            public void onDestroy(LifecycleOwner ownerInner) {
-                subscriptions.remove(owner);
-            }
-        });
+        // Best-effort lifecycle observation: when we can resolve a Lifecycle we add a hand-rolled
+        // observer that mirrors STARTED/STOPPED via reflection. Failures degrade silently — we
+        // already eagerly registered the receiver above.
+        try {
+            Method getLifecycle = fragment.getClass().getMethod("getLifecycle");
+            Object lifecycle = getLifecycle.invoke(fragment);
+            ClassLoader cl = fragment.getClass().getClassLoader();
+            Class<?> observerCls = Class.forName("androidx.lifecycle.LifecycleEventObserver", false, cl);
+            Object observer = Proxy.newProxyInstance(cl, new Class[]{observerCls},
+                    (proxy, method, args) -> {
+                        if ("onStateChanged".equals(method.getName()) && args != null && args.length == 2) {
+                            Object event = args[1];
+                            String eventName = event != null ? event.toString() : "";
+                            if ("ON_DESTROY".equals(eventName)) {
+                                subscriptions.remove(fragment);
+                                sub.unregisterReceiver();
+                            }
+                        }
+                        return null;
+                    });
+            Method add = lifecycle.getClass().getMethod("addObserver",
+                    Class.forName("androidx.lifecycle.LifecycleObserver", false, cl));
+            add.invoke(lifecycle, observer);
+        } catch (Throwable t) {
+            MLog.w("attach lifecycle observer failed; receiver will outlive fragment", t);
+        }
     }
 
     private void wireListeners(Subscription sub) {
-        // Quality changes -> setCodec with new specific1.
-        sub.prefs.qualityOption.setOnPreferenceChangeListener((p, value) -> {
-            if (!(value instanceof String)) return false;
-            CodecSnapshot snapshot = lastSnapshot.get();
-            if (snapshot == null) return false;
-            long specific1;
+        ClassLoader cl = context.getClassLoader();
+        Class<?> changeListenerCls = PrefRef.load(cl, "androidx.preference.Preference$OnPreferenceChangeListener");
+        if (changeListenerCls == null) {
+            MLog.w("OnPreferenceChangeListener interface not found on host classpath");
+            return;
+        }
+        Object qualityListener = Proxy.newProxyInstance(cl, new Class[]{changeListenerCls},
+                (proxy, method, args) -> {
+                    if (!"onPreferenceChange".equals(method.getName()) || args == null || args.length < 2) {
+                        return false;
+                    }
+                    return handleQualityChange(sub, args[1]);
+                });
+        Object sampleListener = Proxy.newProxyInstance(cl, new Class[]{changeListenerCls},
+                (proxy, method, args) -> {
+                    if (!"onPreferenceChange".equals(method.getName()) || args == null || args.length < 2) {
+                        return false;
+                    }
+                    return handleSampleRateChange(sub, args[1]);
+                });
+        Object rememberListener = Proxy.newProxyInstance(cl, new Class[]{changeListenerCls},
+                (proxy, method, args) -> {
+                    if (!"onPreferenceChange".equals(method.getName()) || args == null || args.length < 2) {
+                        return false;
+                    }
+                    return handleRememberChange(sub, args[1]);
+                });
+
+        invokeSetChangeListener(sub.prefs.qualityOption, qualityListener, changeListenerCls);
+        invokeSetChangeListener(sub.prefs.sampleRateOption, sampleListener, changeListenerCls);
+        invokeSetChangeListener(sub.prefs.rememberToggle, rememberListener, changeListenerCls);
+    }
+
+    private static void invokeSetChangeListener(Object pref, Object listener, Class<?> ifaceCls) {
+        if (pref == null || listener == null) return;
+        try {
+            Method m = findMethodInHierarchy(pref.getClass(), "setOnPreferenceChangeListener", ifaceCls);
+            if (m != null) {
+                m.setAccessible(true);
+                m.invoke(pref, listener);
+            }
+        } catch (Throwable t) {
+            MLog.w("setOnPreferenceChangeListener failed", t);
+        }
+    }
+
+    private static Method findMethodInHierarchy(Class<?> startCls, String name, Class<?> paramType) {
+        Class<?> cls = startCls;
+        while (cls != null && cls != Object.class) {
             try {
-                specific1 = Long.parseLong((String) value);
-            } catch (NumberFormatException e) {
-                return false;
+                return cls.getDeclaredMethod(name, paramType);
+            } catch (NoSuchMethodException ignored) {
+                cls = cls.getSuperclass();
             }
-            CodecRequest req = CodecRequest.fromActive(snapshot)
-                    .withSpecific1(specific1)
-                    .build();
-            applyWrite(sub, req);
-            return true;
-        });
+        }
+        return null;
+    }
 
-        // Sample rate changes -> setCodec with new sampleRate.
-        sub.prefs.sampleRateOption.setOnPreferenceChangeListener((p, value) -> {
-            if (!(value instanceof String)) return false;
-            CodecSnapshot snapshot = lastSnapshot.get();
-            if (snapshot == null) return false;
-            int rateBit = decodeStoredSampleRate((String) value, snapshot.selectableSampleRateMask);
-            if (rateBit < 0) return false;
-            CodecRequest req = CodecRequest.fromActive(snapshot)
-                    .withSampleRate(rateBit)
-                    .build();
-            applyWrite(sub, req);
-            return true;
-        });
+    private boolean handleQualityChange(Subscription sub, Object value) {
+        if (!(value instanceof CharSequence)) return false;
+        CodecSnapshot snapshot = lastSnapshot.get();
+        if (snapshot == null) return false;
+        long specific1;
+        try {
+            specific1 = Long.parseLong(value.toString());
+        } catch (NumberFormatException e) {
+            return false;
+        }
+        CodecRequest req = CodecRequest.fromActive(snapshot)
+                .withSpecific1(specific1)
+                .build();
+        applyWrite(sub, req);
+        return true;
+    }
 
-        // Remember toggle.
-        sub.prefs.rememberToggle.setOnPreferenceChangeListener((p, value) -> {
-            if (!(value instanceof Boolean)) return false;
-            boolean enabled = (Boolean) value;
-            prefs.setRemembered(sub.mac, enabled);
-            if (enabled) {
-                CodecSnapshot s = lastSnapshot.get();
-                if (s != null && s.mac != null && s.mac.equals(sub.mac)) {
-                    prefs.writeSnapshot(sub.mac, s.activeCodecSpecific1, s.activeSampleRate);
-                }
+    private boolean handleSampleRateChange(Subscription sub, Object value) {
+        if (!(value instanceof CharSequence)) return false;
+        CodecSnapshot snapshot = lastSnapshot.get();
+        if (snapshot == null) return false;
+        int rateBit = decodeStoredSampleRate(value.toString(), snapshot.selectableSampleRateMask);
+        if (rateBit < 0) return false;
+        CodecRequest req = CodecRequest.fromActive(snapshot)
+                .withSampleRate(rateBit)
+                .build();
+        applyWrite(sub, req);
+        return true;
+    }
+
+    private boolean handleRememberChange(Subscription sub, Object value) {
+        if (!(value instanceof Boolean)) return false;
+        boolean enabled = (Boolean) value;
+        prefs.setRemembered(sub.mac, enabled);
+        if (enabled) {
+            CodecSnapshot s = lastSnapshot.get();
+            if (s != null && s.mac != null && s.mac.equals(sub.mac)) {
+                prefs.writeSnapshot(sub.mac, s.activeCodecSpecific1, s.activeSampleRate);
             }
-            return true;
-        });
+        }
+        return true;
     }
 
     private void applyWrite(Subscription sub, CodecRequest request) {
@@ -211,10 +279,7 @@ public final class CodecController {
         renderSnapshot(snapshot, sub, /* fromCache= */ false);
     }
 
-    /**
-     * Called when {@link CodecBridgeClient} forwards a system-side push event. We refresh every
-     * subscription whose MAC matches; subscriptions for other devices are left alone.
-     */
+    /** Called when {@link CodecBridgeClient} forwards a system-side push event. */
     private void onPushedSnapshot(CodecSnapshot snapshot) {
         if (snapshot == null || snapshot.mac == null) return;
         mainHandler.post(() -> {
@@ -228,39 +293,38 @@ public final class CodecController {
     }
 
     private void renderUnknown(Subscription sub) {
-        sub.prefs.codecDisplay.setSummary(context.getString(R.string.state_codec_unknown));
-        sub.prefs.qualityOption.setVisible(false);
-        sub.prefs.sampleRateOption.setVisible(false);
-        sub.prefs.rememberToggle.setChecked(prefs.isRemembered(sub.mac));
+        PrefRef.setSummary(sub.prefs.codecDisplay, context.getString(R.string.state_codec_unknown));
+        PrefRef.setVisible(sub.prefs.qualityOption, false);
+        PrefRef.setVisible(sub.prefs.sampleRateOption, false);
+        PrefRef.setChecked(sub.prefs.rememberToggle, prefs.isRemembered(sub.mac));
     }
 
     private void renderSnapshot(CodecSnapshot snapshot, Subscription sub, boolean fromCache) {
         String codecName = CodecLabelTable.codecLabel(context, snapshot.activeCodecType);
         if (fromCache) {
-            String stamp = new SimpleDateFormat("HH:mm:ss", Locale.ROOT)
-                    .format(new Date());
-            sub.prefs.codecDisplay.setSummary(codecName + "  ·  "
-                    + context.getString(R.string.freshness_label, stamp));
+            String stamp = new SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(new Date());
+            PrefRef.setSummary(sub.prefs.codecDisplay,
+                    codecName + "  ·  " + context.getString(R.string.freshness_label, stamp));
         } else {
-            sub.prefs.codecDisplay.setSummary(codecName);
+            PrefRef.setSummary(sub.prefs.codecDisplay, codecName);
         }
 
         renderQuality(snapshot, sub);
         renderSampleRate(snapshot, sub);
-        sub.prefs.rememberToggle.setChecked(prefs.isRemembered(sub.mac));
+        PrefRef.setChecked(sub.prefs.rememberToggle, prefs.isRemembered(sub.mac));
     }
 
     private void renderQuality(CodecSnapshot snapshot, Subscription sub) {
         long[] selectable = snapshot.selectableCodecSpecific1;
-        ListPreference q = sub.prefs.qualityOption;
+        Object q = sub.prefs.qualityOption;
         if (selectable == null || selectable.length == 0) {
-            q.setVisible(false);
+            PrefRef.setVisible(q, false);
             return;
         }
         // Hide Quality option for codecs that do not expose quality steps (e.g. SBC default).
         if (snapshot.activeCodecType != CodecLabelTable.CODEC_LDAC
                 && snapshot.activeCodecType != CodecLabelTable.CODEC_LHDC) {
-            q.setVisible(false);
+            PrefRef.setVisible(q, false);
             return;
         }
         CharSequence[] entries = new CharSequence[selectable.length];
@@ -269,24 +333,24 @@ public final class CodecController {
             entries[i] = CodecLabelTable.qualityLabel(context, snapshot.activeCodecType, selectable[i]);
             values[i] = String.valueOf(selectable[i]);
         }
-        q.setEntries(entries);
-        q.setEntryValues(values);
+        PrefRef.setEntries(q, entries);
+        PrefRef.setEntryValues(q, values);
         String currentValue = String.valueOf(snapshot.activeCodecSpecific1);
         if (!Arrays.asList(values).contains(currentValue)) {
-            q.setSummary(context.getString(R.string.quality_unknown_value, currentValue));
+            PrefRef.setSummary(q, context.getString(R.string.quality_unknown_value, currentValue));
         } else {
-            q.setValue(currentValue);
-            q.setSummary(CodecLabelTable.qualityLabel(
+            PrefRef.setValue(q, currentValue);
+            PrefRef.setSummary(q, CodecLabelTable.qualityLabel(
                     context, snapshot.activeCodecType, snapshot.activeCodecSpecific1));
         }
-        q.setVisible(true);
+        PrefRef.setVisible(q, true);
     }
 
     private void renderSampleRate(CodecSnapshot snapshot, Subscription sub) {
         int[] rates = CodecSnapshot.decodeSampleRateBits(snapshot.selectableSampleRateMask);
-        ListPreference r = sub.prefs.sampleRateOption;
+        Object r = sub.prefs.sampleRateOption;
         if (rates.length == 0) {
-            r.setVisible(false);
+            PrefRef.setVisible(r, false);
             return;
         }
         List<CharSequence> entryList = new ArrayList<>(rates.length);
@@ -295,15 +359,14 @@ public final class CodecController {
             entryList.add(CodecLabelTable.sampleRateLabel(rate));
             valueList.add(String.valueOf(rate));
         }
-        r.setEntries(entryList.toArray(new CharSequence[0]));
-        r.setEntryValues(valueList.toArray(new CharSequence[0]));
-        // Map the active sample-rate bit to a Hz value if known so we select the right entry.
+        PrefRef.setEntries(r, entryList.toArray(new CharSequence[0]));
+        PrefRef.setEntryValues(r, valueList.toArray(new CharSequence[0]));
         int activeHz = sampleRateBitToHz(snapshot.activeSampleRate);
         if (activeHz > 0) {
-            r.setValue(String.valueOf(activeHz));
-            r.setSummary(CodecLabelTable.sampleRateLabel(activeHz));
+            PrefRef.setValue(r, String.valueOf(activeHz));
+            PrefRef.setSummary(r, CodecLabelTable.sampleRateLabel(activeHz));
         }
-        r.setVisible(true);
+        PrefRef.setVisible(r, true);
     }
 
     private static int sampleRateBitToHz(int bit) {
@@ -312,11 +375,6 @@ public final class CodecController {
         return decoded[0];
     }
 
-    /**
-     * Inverse of {@link #sampleRateBitToHz(int)}. Walks the selectable-mask once to find the
-     * single bit that decodes to the chosen Hz value, so we never write a bit the platform does
-     * not support.
-     */
     private static int decodeStoredSampleRate(String storedValue, int selectableMask) {
         int hz;
         try {
@@ -327,7 +385,6 @@ public final class CodecController {
         int[] supported = CodecSnapshot.decodeSampleRateBits(selectableMask);
         for (int v : supported) {
             if (v == hz) {
-                // Find the original bit that decoded to this Hz.
                 for (int b = 0; b < 31; b++) {
                     int bit = 1 << b;
                     if ((selectableMask & bit) == 0) continue;
@@ -339,7 +396,7 @@ public final class CodecController {
         return -1;
     }
 
-    /** Per-attach state — receiver, MAC, and Preference references. */
+    /** Per-attach state. */
     private final class Subscription {
         final String mac;
         final CodecPreferences prefs;
