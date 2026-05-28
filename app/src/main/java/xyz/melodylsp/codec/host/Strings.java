@@ -25,7 +25,7 @@ public final class Strings {
     public static final String STATE_PERMISSION_REQUIRED = "授予蓝牙连接权限";
     public static final String STATE_VERSION_UNCALIBRATED = "面板版本未校准，部分功能可能受限";
 
-    public static final String BANNER_VIA_SETTINGS = "已通过开发者选项写入，可能需要重连耳机生效";
+    public static final String BANNER_VIA_SETTINGS = "已写入开发者选项";
     public static final String BANNER_VIA_ROOT = "已通过 root 写入开发者选项，蓝牙正在重连";
     public static final String TOAST_APPLY_FAILED = "切换未生效，请重试";
 
@@ -44,10 +44,10 @@ public final class Strings {
     public static final String QUALITY_LDAC_990 = "990 kbps（音质优先）";
     public static final String QUALITY_LDAC_660 = "660 kbps（标准）";
     public static final String QUALITY_LDAC_330 = "330 kbps（连接优先）";
-    public static final String QUALITY_LHDC_V1 = "LHDC V1";
-    public static final String QUALITY_LHDC_V2 = "LHDC V2";
-    public static final String QUALITY_LHDC_V3 = "LHDC V3";
-    public static final String QUALITY_LHDC_V5 = "LHDC V5";
+    public static final String QUALITY_LHDC_CONNECTION = "连接优先";
+    public static final String QUALITY_LHDC_BALANCED = "均衡";
+    public static final String QUALITY_LHDC_HIGH = "音质优先";
+    public static final String QUALITY_LHDC_LOSSLESS = "极致音质";
 
     private Strings() {
     }

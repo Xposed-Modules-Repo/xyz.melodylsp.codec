@@ -230,17 +230,18 @@ public final class HostHookInstaller {
         if (parent == null) parent = screen;
         int anchorOrder = PrefRef.getOrder(anchor);
         int targetOrder = anchorOrder + 1;
-        shiftPreferenceOrders(parent, targetOrder, +1);
+        shiftPreferenceOrders(parent, targetOrder, +4);
 
         String mac = resolveMacFromActivityIntent(fragment);
         if (mac == null) {
             MLog.w("Hi-Res-anchored insertion: mac unresolved; skip");
             return false;
         }
-        // DetailMain wants the wrapped category card with remember toggle.
+        // DetailMain uses the same top-level row group as OneSpace so the neighbouring host
+        // cards visually connect instead of forming double-rounded notches.
         CodecPreferences prefs = CodecBlockBuilder.buildAndInsert(
                 themedContext, parent, targetOrder,
-                /* wrapInCategory= */ true, /* includeRemember= */ true);
+                /* wrapInCategory= */ false, /* includeRemember= */ true);
         if (prefs == null) return false;
         controller.attach(mac, prefs, fragment);
         attachedScreens.add(screen);

@@ -43,11 +43,12 @@ public final class CodecLabelTable {
     public static final long LDAC_QUALITY_MID = 1001L;
     public static final long LDAC_QUALITY_LOW = 1002L;
 
-    // LHDC version codes encoded into codecSpecific1's lower bits per the OPPO BLT vendor stack.
-    public static final long LHDC_V1 = 1L;
-    public static final long LHDC_V2 = 2L;
-    public static final long LHDC_V3 = 3L;
-    public static final long LHDC_V5 = 5L;
+    // LHDC playback-quality codes live in codecSpecific1's low byte. The high bits carry
+    // vendor flags and must be preserved when writing a new value.
+    public static final long LHDC_QUALITY_CONNECTION = 1L;
+    public static final long LHDC_QUALITY_BALANCED = 3L;
+    public static final long LHDC_QUALITY_HIGH = 5L;
+    public static final long LHDC_QUALITY_LOSSLESS = 9L;
 
     private CodecLabelTable() {
     }
@@ -91,12 +92,14 @@ public final class CodecLabelTable {
     };
 
     /**
-     * Quality steps the LHDC family supports per the Savitech vendor specification. The
-     * version is encoded in the low byte of codecSpecific1; high bits are vendor extensions
-     * (e.g. lossless toggle) we do not surface yet.
+     * Quality steps the LHDC family exposes on the OPPO stack. The active Enco X3 value in
+     * logs is 0x8009, so include 9 rather than treating it as an unknown vendor extension.
      */
     public static final long[] LHDC_QUALITY_STEPS = {
-            LHDC_V1, LHDC_V2, LHDC_V3, LHDC_V5
+            LHDC_QUALITY_CONNECTION,
+            LHDC_QUALITY_BALANCED,
+            LHDC_QUALITY_HIGH,
+            LHDC_QUALITY_LOSSLESS
     };
 
     /** Returns the protocol-defined quality steps for {@code codecType} when the platform
@@ -134,10 +137,10 @@ public final class CodecLabelTable {
             // The vendor encodes the version in the low byte; mask it before lookup so that
             // future bit fields (e.g. lossless toggle) do not break label resolution.
             long versionByte = specific1 & 0xFFL;
-            if (versionByte == LHDC_V1) return Strings.QUALITY_LHDC_V1;
-            if (versionByte == LHDC_V2) return Strings.QUALITY_LHDC_V2;
-            if (versionByte == LHDC_V3) return Strings.QUALITY_LHDC_V3;
-            if (versionByte == LHDC_V5) return Strings.QUALITY_LHDC_V5;
+            if (versionByte == LHDC_QUALITY_CONNECTION) return Strings.QUALITY_LHDC_CONNECTION;
+            if (versionByte == LHDC_QUALITY_BALANCED) return Strings.QUALITY_LHDC_BALANCED;
+            if (versionByte == LHDC_QUALITY_HIGH) return Strings.QUALITY_LHDC_HIGH;
+            if (versionByte == LHDC_QUALITY_LOSSLESS) return Strings.QUALITY_LHDC_LOSSLESS;
         }
         return "档位 (" + specific1 + ")";
     }

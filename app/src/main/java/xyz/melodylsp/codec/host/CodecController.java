@@ -1,15 +1,24 @@
 package xyz.melodylsp.codec.host;
 
-import android.app.AlertDialog;
 import android.app.Activity;
+import android.app.Dialog;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.ContextWrapper;
-import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.Gravity;
+import android.view.View;
+import android.view.Window;
+import android.view.WindowManager;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import java.lang.reflect.Method;
@@ -34,7 +43,7 @@ import xyz.melodylsp.codec.util.MLog;
  * intents through {@link CodecBridgeClient}.
  *
  * <p>Quality and sample-rate rows are plain {@code Preference} entries whose click handler
- * pops a hand-rolled {@link AlertDialog}. We deliberately avoid {@code ListPreference}: R8
+ * pops a hand-rolled small floating {@link Dialog}. We deliberately avoid {@code ListPreference}: R8
  * stripped {@code setEntries} / {@code setEntryValues} from the host APK because the host
  * never calls them in code, so the AOSP {@code ListPreferenceDialogFragmentCompat} crashes
  * the moment the user taps the row, regardless of how we try to populate the entries by
@@ -83,7 +92,7 @@ public final class CodecController {
 
     /**
      * Wire up click listeners on the quality and sample-rate Preferences. Tap → pop a
-     * hand-rolled AlertDialog with the current options. We resolve
+     * hand-rolled floating dialog with the current options. We resolve
      * {@code OnPreferenceClickListener} via reflection because the inner-class FQN is
      * R8-renamed inside the host APK.
      */
@@ -133,7 +142,7 @@ public final class CodecController {
     }
 
     /**
-     * Pop an AlertDialog letting the user pick a quality step. Picks a sensible options list
+     * Pop a floating dialog letting the user pick a quality step. Picks a sensible options list
      * even when AOSP {@code getCodecsSelectableCapabilities} returned nothing for this codec
      * (vendor codec quirk on every OPPO LHDC variant).
      */
@@ -158,7 +167,10 @@ public final class CodecController {
         int checked = -1;
         for (int i = 0; i < options.length; i++) {
             entries[i] = CodecLabelTable.qualityLabel(context, snapshot.activeCodecType, options[i]);
-            if (options[i] == snapshot.activeCodecSpecific1) checked = i;
+            if (qualityValueMatches(snapshot.activeCodecType,
+                    options[i], snapshot.activeCodecSpecific1)) {
+                checked = i;
+            }
         }
         long[] finalOptions = options;
         Context dialogContext = resolveLiveDialogContext(sub);
@@ -168,20 +180,15 @@ public final class CodecController {
         }
         boolean finalPreserveLhdcHighBits = preserveLhdcHighBits;
         try {
-            new AlertDialog.Builder(dialogContext)
-                    .setTitle(Strings.QUALITY_OPTION_TITLE)
-                    .setSingleChoiceItems(entries, checked, (DialogInterface dlg, int which) -> {
-                        dlg.dismiss();
-                        long picked = finalOptions[which];
-                        if (finalPreserveLhdcHighBits) {
-                            picked = (snapshot.activeCodecSpecific1 & ~0xFFL) | (picked & 0xFFL);
-                        }
-                        CodecRequest req = CodecRequest.fromActive(snapshot)
-                                .withSpecific1(picked).build();
-                        applyWrite(sub, req);
-                    })
-                    .setNegativeButton(android.R.string.cancel, null)
-                    .show();
+            showChoicePopup(dialogContext, entries, checked, which -> {
+                long picked = finalOptions[which];
+                if (finalPreserveLhdcHighBits) {
+                    picked = (snapshot.activeCodecSpecific1 & ~0xFFL) | (picked & 0xFFL);
+                }
+                CodecRequest req = CodecRequest.fromActive(snapshot)
+                        .withSpecific1(picked).build();
+                applyWrite(sub, req);
+            });
         } catch (Throwable t) {
             MLog.e("showQualityPicker dialog.show failed", t);
             Toast.makeText(context, Strings.TOAST_APPLY_FAILED, Toast.LENGTH_SHORT).show();
@@ -218,23 +225,103 @@ public final class CodecController {
             return;
         }
         try {
-            new AlertDialog.Builder(dialogContext)
-                    .setTitle(Strings.SAMPLE_RATE_OPTION_TITLE)
-                    .setSingleChoiceItems(entries, checked, (DialogInterface dlg, int which) -> {
-                        dlg.dismiss();
-                        int hz = finalRates[which];
-                        int bit = sampleRateHzToBit(hz);
-                        if (bit < 0) return;
-                        CodecRequest req = CodecRequest.fromActive(snapshot)
-                                .withSampleRate(bit).build();
-                        applyWrite(sub, req);
-                    })
-                    .setNegativeButton(android.R.string.cancel, null)
-                    .show();
+            showChoicePopup(dialogContext, entries, checked, which -> {
+                int hz = finalRates[which];
+                int bit = sampleRateHzToBit(hz);
+                if (bit < 0) return;
+                CodecRequest req = CodecRequest.fromActive(snapshot)
+                        .withSampleRate(bit).build();
+                applyWrite(sub, req);
+            });
         } catch (Throwable t) {
             MLog.e("showSampleRatePicker dialog.show failed", t);
             Toast.makeText(context, Strings.TOAST_APPLY_FAILED, Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private interface ChoiceCallback {
+        void onChoice(int which);
+    }
+
+    private static void showChoicePopup(
+            Context dialogContext, CharSequence[] entries, int checked, ChoiceCallback callback) {
+        Dialog dialog = new Dialog(dialogContext);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+        LinearLayout list = new LinearLayout(dialogContext);
+        list.setOrientation(LinearLayout.VERTICAL);
+        int horizontal = dp(dialogContext, 22);
+        int rowHeight = dp(dialogContext, 64);
+        int blue = Color.rgb(0, 105, 255);
+        int textColor = Color.rgb(25, 25, 25);
+        int dividerColor = Color.argb(28, 0, 0, 0);
+
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(Color.WHITE);
+        bg.setCornerRadius(dp(dialogContext, 22));
+        list.setBackground(bg);
+        if (Build.VERSION.SDK_INT >= 21) {
+            list.setElevation(dp(dialogContext, 12));
+        }
+
+        for (int i = 0; i < entries.length; i++) {
+            final int index = i;
+            LinearLayout row = new LinearLayout(dialogContext);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setPadding(horizontal, 0, horizontal, 0);
+            row.setMinimumHeight(rowHeight);
+
+            TextView title = new TextView(dialogContext);
+            title.setText(entries[i]);
+            title.setTextSize(20);
+            title.setSingleLine(false);
+            title.setGravity(Gravity.CENTER_VERTICAL);
+            title.setTextColor(i == checked ? blue : textColor);
+            row.addView(title, new LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.MATCH_PARENT, 1f));
+
+            TextView check = new TextView(dialogContext);
+            check.setText(i == checked ? "\u2713" : "");
+            check.setTextColor(blue);
+            check.setTextSize(30);
+            check.setGravity(Gravity.CENTER);
+            row.addView(check, new LinearLayout.LayoutParams(
+                    dp(dialogContext, 44), LinearLayout.LayoutParams.MATCH_PARENT));
+
+            row.setOnClickListener(v -> {
+                dialog.dismiss();
+                callback.onChoice(index);
+            });
+            list.addView(row, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, rowHeight));
+
+            if (i + 1 < entries.length) {
+                View divider = new View(dialogContext);
+                divider.setBackgroundColor(dividerColor);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, 1);
+                lp.setMargins(horizontal, 0, horizontal, 0);
+                list.addView(divider, lp);
+            }
+        }
+
+        dialog.setContentView(list);
+        dialog.show();
+
+        Window window = dialog.getWindow();
+        if (window == null) return;
+        window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+        WindowManager.LayoutParams attrs = window.getAttributes();
+        attrs.width = Math.min(
+                dialogContext.getResources().getDisplayMetrics().widthPixels - dp(dialogContext, 48),
+                dp(dialogContext, 356));
+        attrs.height = WindowManager.LayoutParams.WRAP_CONTENT;
+        attrs.gravity = Gravity.TOP | Gravity.END;
+        attrs.x = dp(dialogContext, 18);
+        attrs.y = dp(dialogContext, 118);
+        window.setAttributes(attrs);
     }
 
     private static Context resolveLiveDialogContext(Subscription sub) {
@@ -443,10 +530,14 @@ public final class CodecController {
 
     private void renderUnknown(Subscription sub) {
         if (sub.prefs.codecDisplay != null) {
-            PrefRef.setTitle(sub.prefs.codecDisplay, Strings.CODEC_BLOCK_TITLE);
+            PrefRef.setTitle(sub.prefs.codecDisplay,
+                    Strings.CODEC_BLOCK_TITLE + " : " + Strings.STATE_NO_DEVICE);
         }
-        PrefRef.setVisible(sub.prefs.qualityOption, false);
-        PrefRef.setVisible(sub.prefs.sampleRateOption, false);
+        PrefRef.setSummary(sub.prefs.qualityOption, Strings.STATE_NO_DEVICE);
+        PrefRef.setSummary(sub.prefs.sampleRateOption, Strings.STATE_NO_DEVICE);
+        PrefRef.setVisible(sub.prefs.qualityOption, true);
+        PrefRef.setVisible(sub.prefs.sampleRateOption, true);
+        setBlockDisabled(sub, true);
         if (sub.prefs.rememberToggle != null) {
             PrefRef.setChecked(sub.prefs.rememberToggle, prefs.isRemembered(sub.mac));
         }
@@ -457,20 +548,30 @@ public final class CodecController {
         String header;
         if (fromCache) {
             String stamp = new SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(new Date());
-            header = Strings.CODEC_BLOCK_TITLE + " · " + codecName + "  ("
+            header = Strings.CODEC_BLOCK_TITLE + " : " + codecName + "  ("
                     + String.format(Strings.FRESHNESS_LABEL_FORMAT, stamp) + ")";
         } else {
-            header = Strings.CODEC_BLOCK_TITLE + " · " + codecName;
+            header = Strings.CODEC_BLOCK_TITLE + " : " + codecName;
         }
         if (sub.prefs.codecDisplay != null) {
             PrefRef.setTitle(sub.prefs.codecDisplay, header);
         }
+        setBlockDisabled(sub, false);
 
         renderQuality(snapshot, sub);
         renderSampleRate(snapshot, sub);
         if (sub.prefs.rememberToggle != null) {
             PrefRef.setChecked(sub.prefs.rememberToggle, prefs.isRemembered(sub.mac));
         }
+    }
+
+    private static void setBlockDisabled(Subscription sub, boolean disabled) {
+        if (sub == null || sub.prefs == null) return;
+        PrefRef.setDisabled(sub.prefs.category, disabled);
+        PrefRef.setDisabled(sub.prefs.codecDisplay, disabled);
+        PrefRef.setDisabled(sub.prefs.qualityOption, disabled);
+        PrefRef.setDisabled(sub.prefs.sampleRateOption, disabled);
+        PrefRef.setDisabled(sub.prefs.rememberToggle, disabled);
     }
 
     private void renderQuality(CodecSnapshot snapshot, Subscription sub) {
@@ -491,7 +592,11 @@ public final class CodecController {
         // Show the current quality as the row's summary, exact match or fallback.
         boolean known = false;
         for (long opt : options) {
-            if (opt == snapshot.activeCodecSpecific1) { known = true; break; }
+            if (qualityValueMatches(snapshot.activeCodecType,
+                    opt, snapshot.activeCodecSpecific1)) {
+                known = true;
+                break;
+            }
         }
         if (known) {
             PrefRef.setSummary(q, CodecLabelTable.qualityLabel(
@@ -529,6 +634,13 @@ public final class CodecController {
         return mask;
     }
 
+    private static boolean qualityValueMatches(int codecType, long option, long active) {
+        if (CodecLabelTable.isLhdc(codecType)) {
+            return (option & 0xFFL) == (active & 0xFFL);
+        }
+        return option == active;
+    }
+
     private static int sampleRateBitToHz(int bit) {
         int[] decoded = CodecSnapshot.decodeSampleRateBits(bit);
         if (decoded.length != 1 || decoded[0] <= 0) return -1;
@@ -542,6 +654,11 @@ public final class CodecController {
             if (knownHz[i] == hz) return knownBits[i];
         }
         return -1;
+    }
+
+    private static int dp(Context context, int value) {
+        float density = context.getResources().getDisplayMetrics().density;
+        return Math.round(value * density);
     }
 
     private final class Subscription {

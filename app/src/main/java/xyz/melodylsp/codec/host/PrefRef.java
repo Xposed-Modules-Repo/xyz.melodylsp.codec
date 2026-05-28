@@ -103,6 +103,13 @@ public final class PrefRef {
         invokeVoid(pref, "setEnabled", new Class[]{boolean.class}, new Object[]{enabled});
     }
 
+    public static void setDisabled(Object pref, boolean disabled) {
+        if (!invokeVoidStrict(pref, "setDisabled",
+                new Class[]{boolean.class}, new Object[]{disabled})) {
+            setEnabled(pref, !disabled);
+        }
+    }
+
     public static void setChecked(Object pref, boolean checked) {
         invokeVoid(pref, "setChecked", new Class[]{boolean.class}, new Object[]{checked});
     }

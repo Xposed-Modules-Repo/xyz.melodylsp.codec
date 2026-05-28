@@ -18,6 +18,7 @@ import xyz.melodylsp.codec.bridge.CodecSnapshot;
 import xyz.melodylsp.codec.bridge.ICodecBridge;
 import xyz.melodylsp.codec.bridge.ICodecBridgeListener;
 import xyz.melodylsp.codec.bt.BluetoothCodecReflect;
+import xyz.melodylsp.codec.label.CodecLabelTable;
 import xyz.melodylsp.codec.util.MLog;
 
 /**
@@ -151,6 +152,13 @@ public final class CodecBridgeClient {
     }
 
     private CompletableFuture<WriteResult> setCodecViaSettingsOrRoot(CodecRequest request) {
+        if (CodecLabelTable.isLhdc(request.codecType)) {
+            MLog.w("LHDC realtime write was not confirmed; skip settings/root reconnect fallback");
+            return CompletableFuture.completedFuture(WriteResult.failed(
+                    WriteResult.Path.SYSTEM_BRIDGE,
+                    new IllegalStateException("LHDC realtime write path unavailable")));
+        }
+
         // Path C — Settings.Global from app context (needs WRITE_SECURE_SETTINGS, usually denied).
         boolean wrote = settingsFallback.apply(request);
         if (wrote) {

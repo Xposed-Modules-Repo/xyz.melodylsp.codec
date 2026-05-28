@@ -1,5 +1,8 @@
 package xyz.melodylsp.codec.system;
 
+import android.content.Context;
+import android.os.Binder;
+
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 
@@ -20,6 +23,8 @@ import xyz.melodylsp.codec.util.MLog;
 public final class SystemHookInstaller {
 
     private static final String CLASS_A2DP_SERVICE = "com.android.bluetooth.a2dp.A2dpService";
+    private static final String CLASS_BT_UTILS = "com.android.bluetooth.Utils";
+    private static final String MELODY_PKG = "com.oplus.melody";
 
     private final MelodyCodecLspEntry module;
     private final ClassLoader classLoader;
@@ -38,9 +43,34 @@ public final class SystemHookInstaller {
             MLog.w("A2dpService not found in com.android.bluetooth (scope misconfigured?)");
             return;
         }
+        hookCdmAssociationForMelody();
         hookConstructors(a2dpCls);
         hookLifecycle(a2dpCls);
         hookCodecConfigUpdated(a2dpCls);
+    }
+
+    private void hookCdmAssociationForMelody() {
+        Class<?> utilsCls;
+        try {
+            utilsCls = Class.forName(CLASS_BT_UTILS, false, classLoader);
+        } catch (Throwable t) {
+            MLog.w("Bluetooth Utils class not found; CDM bypass unavailable");
+            return;
+        }
+        int hooked = 0;
+        for (Method m : utilsCls.getDeclaredMethods()) {
+            if (!"enforceCdmAssociation".equals(m.getName())) continue;
+            module.hook(m).intercept(chain -> {
+                Object[] args = chain.getArgs().toArray();
+                if (isMelodyA2dpCodecCall(args)) {
+                    MLog.event("cdm.bypass", "method", m.getName());
+                    return null;
+                }
+                return chain.proceed();
+            });
+            hooked++;
+        }
+        MLog.event("cdm.hooks", "count", hooked);
     }
 
     private void hookConstructors(Class<?> a2dpCls) {
@@ -96,6 +126,52 @@ public final class SystemHookInstaller {
                 }
                 return result;
             });
+        }
+    }
+
+    private static boolean isMelodyA2dpCodecCall(Object[] args) {
+        if (!isA2dpCodecPreferenceStack()) return false;
+        for (Object arg : args) {
+            if (MELODY_PKG.equals(String.valueOf(arg))) return true;
+        }
+        Context context = findContext(args);
+        if (context == null) context = currentApplication();
+        if (context == null) return false;
+        int callingUid = Binder.getCallingUid();
+        String[] packages = context.getPackageManager().getPackagesForUid(callingUid);
+        if (packages == null) return false;
+        for (String pkg : packages) {
+            if (MELODY_PKG.equals(pkg)) return true;
+        }
+        return false;
+    }
+
+    private static boolean isA2dpCodecPreferenceStack() {
+        StackTraceElement[] stack = Thread.currentThread().getStackTrace();
+        for (StackTraceElement e : stack) {
+            if ("setCodecConfigPreference".equals(e.getMethodName())
+                    && e.getClassName().contains("A2dpService")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static Context findContext(Object[] args) {
+        for (Object arg : args) {
+            if (arg instanceof Context) return (Context) arg;
+        }
+        return null;
+    }
+
+    private static Context currentApplication() {
+        try {
+            Class<?> at = Class.forName("android.app.ActivityThread");
+            Method currentApplication = at.getMethod("currentApplication");
+            Object app = currentApplication.invoke(null);
+            return app instanceof Context ? (Context) app : null;
+        } catch (Throwable t) {
+            return null;
         }
     }
 }
