@@ -305,11 +305,65 @@ public final class HostHookInstaller {
                 /* wrapInCategory= */ true, /* includeRemember= */ false);
         if (prefs == null) return false;
         setCategoryTopMarginZero(prefs.category);
+        // Add bottom padding to the RecyclerView so the last host row ("耳机设置") is not
+        // clipped by overscroll-bounce after our injection extends the content height.
+        addRecyclerBottomPadding(fragment, dpToPx(themedContext, 64));
         controller.attach(mac, prefs, fragment);
         attachedScreens.add(screen);
         MLog.event("onespace.injected", "mac_len", mac.length(), "order", targetOrder,
                 "anchor", anchor != null ? PrefRef.getKey(anchor) : "none");
         return true;
+    }
+
+    /**
+     * Increase the {@code RecyclerView}'s bottom padding so the last row settles cleanly after
+     * an overscroll bounce. Without this, the host's "耳机设置" row at the bottom of OneSpace
+     * gets visually clipped because our injection extends the content height past the natural
+     * scroll-stop point.
+     *
+     * <p>{@code androidx.preference.PreferenceFragmentCompat} keeps the RecyclerView in field
+     * {@code mList} (renamed by R8). We locate it by walking the fragment's {@code View} tree
+     * looking for the only {@link androidx.recyclerview.widget.RecyclerView} child.</p>
+     */
+    private static void addRecyclerBottomPadding(Object fragment, int extraPx) {
+        try {
+            android.view.View root = null;
+            try {
+                Method m = fragment.getClass().getMethod("getView");
+                Object v = m.invoke(fragment);
+                if (v instanceof android.view.View) root = (android.view.View) v;
+            } catch (Throwable ignored) {
+            }
+            if (root == null) return;
+            androidx.recyclerview.widget.RecyclerView rv = findRecyclerView(root);
+            if (rv == null) return;
+            int currentBottom = rv.getPaddingBottom();
+            // Idempotency guard: if already padded enough, skip.
+            if (currentBottom >= extraPx) return;
+            rv.setClipToPadding(false);
+            rv.setPadding(rv.getPaddingLeft(), rv.getPaddingTop(),
+                    rv.getPaddingRight(), currentBottom + extraPx);
+        } catch (Throwable t) {
+            MLog.w("addRecyclerBottomPadding failed", t);
+        }
+    }
+
+    private static androidx.recyclerview.widget.RecyclerView findRecyclerView(android.view.View root) {
+        if (root instanceof androidx.recyclerview.widget.RecyclerView) {
+            return (androidx.recyclerview.widget.RecyclerView) root;
+        }
+        if (!(root instanceof android.view.ViewGroup)) return null;
+        android.view.ViewGroup group = (android.view.ViewGroup) root;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            androidx.recyclerview.widget.RecyclerView found = findRecyclerView(group.getChildAt(i));
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private static int dpToPx(Context context, int dp) {
+        float density = context.getResources().getDisplayMetrics().density;
+        return Math.round(dp * density);
     }
 
     private static void setCategoryTopMarginZero(Object category) {
