@@ -11,8 +11,8 @@ import xyz.melodylsp.codec.util.MLog;
  * the host's own code), so the moment the user taps a {@code ListPreference} the dialog
  * fragment crashes with {@code "ListPreference requires an entries array and an entryValues
  * array."} regardless of how we try to populate it. We dodge the entire dialog path by using
- * plain {@code Preference} rows whose click handler is a hand-rolled {@code AlertDialog}
- * (see {@link CodecController#showPickerDialog}). Same UX, none of the R8 fallout.
+ * plain {@code Preference} rows whose click handler pops a hand-rolled {@code PopupWindow}
+ * (see {@link CodecController}). Same UX, none of the R8 fallout.
  *
  * <p>OneSpace skips the remember toggle — that surface is for instant switching, persistence
  * belongs in DetailMain. Both surfaces can use a Category wrapper when the host list needs

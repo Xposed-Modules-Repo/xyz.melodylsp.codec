@@ -554,27 +554,6 @@ public final class HostHookInstaller {
         }
     }
 
-    private static String resolveHighAudioMac(Object fragment) {
-        // First try the parent fragment's intent (HighAudioPreferenceFragment is hosted by
-        // HighAudioDetailFragment). Both share the same activity intent so the result is the
-        // same as querying the fragment directly, but the parent path matches the host's own
-        // MAC plumbing.
-        try {
-            Method getParent = fragment.getClass().getMethod("getParentFragment");
-            Object parent = getParent.invoke(fragment);
-            if (parent != null) {
-                String mac = resolveMacFromActivityIntent(parent);
-                if (mac != null) return mac;
-            }
-        } catch (Throwable ignored) {
-        }
-        return resolveMacFromActivityIntent(fragment);
-    }
-
-    private static String resolveOneSpaceMac(Object fragment) {
-        return resolveMacFromActivityIntent(fragment);
-    }
-
     private Class<?> loadHostClass(String name) {
         try {
             return Class.forName(name, false, classLoader);

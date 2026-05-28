@@ -11,7 +11,6 @@ public final class Strings {
 
     public static final String CODEC_BLOCK_TITLE = "蓝牙音质";
 
-    public static final String CODEC_DISPLAY_TITLE = "当前编解码器";
     public static final String QUALITY_OPTION_TITLE = "播放质量";
     public static final String SAMPLE_RATE_OPTION_TITLE = "采样率";
     public static final String REMEMBER_TOGGLE_TITLE = "记住此耳机的选择";
@@ -19,11 +18,7 @@ public final class Strings {
             "关闭时每次重连按系统默认值；开启后下次连接会自动应用你上次的设置。";
 
     public static final String STATE_NO_DEVICE = "未连接耳机";
-    public static final String STATE_NO_A2DP = "当前设备不支持 A2DP 编解码控制";
     public static final String STATE_CODEC_UNKNOWN = "暂时无法获取编解码器信息";
-    public static final String STATE_CODEC_UNKNOWN_ACTION = "重试";
-    public static final String STATE_PERMISSION_REQUIRED = "授予蓝牙连接权限";
-    public static final String STATE_VERSION_UNCALIBRATED = "面板版本未校准，部分功能可能受限";
 
     public static final String BANNER_VIA_SETTINGS = "已写入开发者选项";
     public static final String BANNER_VIA_ROOT = "已通过 root 写入开发者选项，蓝牙正在重连";
@@ -47,7 +42,6 @@ public final class Strings {
     public static final String QUALITY_LHDC_CONNECTION = "连接优先";
     public static final String QUALITY_LHDC_BALANCED = "均衡";
     public static final String QUALITY_LHDC_HIGH = "音质优先";
-    public static final String QUALITY_LHDC_LOSSLESS = "极致音质";
 
     private Strings() {
     }

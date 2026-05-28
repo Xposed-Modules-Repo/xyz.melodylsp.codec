@@ -1,6 +1,5 @@
 package xyz.melodylsp.codec.host;
 
-import android.bluetooth.BluetoothA2dp;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -381,10 +380,5 @@ public final class CodecBridgeClient {
             }
         }
         future.complete(result);
-    }
-
-    // Package-private accessor exposed only for testing helpers.
-    BluetoothA2dp peekProxy() {
-        return reflect.acquireProxyBlocking();
     }
 }
