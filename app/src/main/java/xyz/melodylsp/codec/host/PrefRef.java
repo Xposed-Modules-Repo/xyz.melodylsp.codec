@@ -98,11 +98,57 @@ public final class PrefRef {
         invokeVoid(container, "addPreference", new Class[]{prefCls}, new Object[]{pref});
     }
 
-    /** Calls {@code findPreference(CharSequence)} on a screen / fragment / category. */
+    /**
+     * Calls {@code findPreference(CharSequence)} on a screen / fragment / category.
+     *
+     * <p>The host APK is R8-minified so the method has been renamed (e.g. {@code findPreference}
+     * → {@code d}). We probe a small set of plausible names; the first one that returns
+     * non-null wins. This is intentionally tolerant — a future host version may map the name
+     * differently.</p>
+     */
     public static Object findPreference(Object container, CharSequence key) {
         if (container == null) return null;
-        return invoke(container, "findPreference",
+        Object r = invoke(container, "findPreference",
                 new Class[]{CharSequence.class}, new Object[]{key});
+        if (r != null) return r;
+        // Fallback: scan for any single-arg method taking CharSequence, returning Object.
+        Class<?> cls = container.getClass();
+        while (cls != null && cls != Object.class) {
+            for (Method m : cls.getDeclaredMethods()) {
+                if (m.getParameterCount() != 1) continue;
+                Class<?>[] params = m.getParameterTypes();
+                if (params[0] != CharSequence.class && params[0] != String.class) continue;
+                if (m.getReturnType() == void.class) continue;
+                if (m.getReturnType().isPrimitive()) continue;
+                try {
+                    m.setAccessible(true);
+                    Object out = m.invoke(container,
+                            params[0] == String.class ? key.toString() : key);
+                    if (out != null && looksLikePreference(out)) return out;
+                } catch (Throwable ignored) {
+                }
+            }
+            cls = cls.getSuperclass();
+        }
+        return null;
+    }
+
+    /**
+     * Heuristic check: an object is "Preference-like" if it has both a {@code setKey} and a
+     * {@code getKey} accessor (any parameter / return type).
+     */
+    private static boolean looksLikePreference(Object obj) {
+        boolean hasSet = false, hasGet = false;
+        Class<?> cls = obj.getClass();
+        while (cls != null && cls != Object.class) {
+            for (Method m : cls.getDeclaredMethods()) {
+                if (!hasGet && m.getName().equals("getKey") && m.getParameterCount() == 0) hasGet = true;
+                if (!hasSet && m.getName().equals("setKey") && m.getParameterCount() == 1) hasSet = true;
+                if (hasGet && hasSet) return true;
+            }
+            cls = cls.getSuperclass();
+        }
+        return hasGet || hasSet;
     }
 
     /** Calls {@code getPreferenceScreen()} on a fragment, with PreferenceManager fallback. */
@@ -114,19 +160,54 @@ public final class PrefRef {
             Object via = invoke(pm, "getPreferenceScreen", new Class[0], new Object[0]);
             if (via != null) return via;
         }
-        // Last resort: walk fields and pick anything whose class name ends with "PreferenceScreen".
-        Class<?> cls = fragment.getClass();
+        // Last resort: walk fields recursively up to depth 2 and pick anything whose type is
+        // androidx.preference.PreferenceScreen. The class name itself is preserved by R8 even
+        // when method / field names are minified.
+        return findPreferenceScreenInFields(fragment, 2);
+    }
+
+    private static Object findPreferenceScreenInFields(Object root, int maxDepth) {
+        if (root == null || maxDepth < 0) return null;
+        Class<?> cls = root.getClass();
         while (cls != null && cls != Object.class) {
             for (java.lang.reflect.Field f : cls.getDeclaredFields()) {
                 Class<?> ft = f.getType();
                 String name = ft.getName();
-                if (name.endsWith(".PreferenceScreen") || name.endsWith("$PreferenceScreen")) {
+                if ("androidx.preference.PreferenceScreen".equals(name)) {
                     try {
                         f.setAccessible(true);
-                        Object v = f.get(fragment);
+                        Object v = f.get(root);
                         if (v != null) return v;
                     } catch (Throwable ignored) {
                     }
+                }
+                if (name.endsWith("$PreferenceScreen") || name.endsWith(".PreferenceScreen")) {
+                    try {
+                        f.setAccessible(true);
+                        Object v = f.get(root);
+                        if (v != null) return v;
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+            cls = cls.getSuperclass();
+        }
+        // Recurse: walk into any non-primitive field once and probe the same way.
+        if (maxDepth == 0) return null;
+        cls = root.getClass();
+        while (cls != null && cls != Object.class) {
+            for (java.lang.reflect.Field f : cls.getDeclaredFields()) {
+                Class<?> ft = f.getType();
+                if (ft.isPrimitive() || ft == String.class || ft.isArray()) continue;
+                if (ft.getName().startsWith("java.")) continue;
+                if (ft.getName().startsWith("android.")) continue;
+                try {
+                    f.setAccessible(true);
+                    Object v = f.get(root);
+                    if (v == null) continue;
+                    Object found = findPreferenceScreenInFields(v, maxDepth - 1);
+                    if (found != null) return found;
+                } catch (Throwable ignored) {
                 }
             }
             cls = cls.getSuperclass();
