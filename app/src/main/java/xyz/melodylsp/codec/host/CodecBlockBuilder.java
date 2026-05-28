@@ -66,25 +66,33 @@ public final class CodecBlockBuilder {
             }
             cloneVisualStyleFrom(category, categoryTemplate);
             PrefRef.setKey(category, "melody_codec_lsp_category");
-            PrefRef.setTitle(category, Strings.CODEC_BLOCK_TITLE);
+            // Suppress the Category's own title — it would render as the host's grey
+            // "section header" floating above the white card, the way "通用设置" does. We want
+            // the codec name to live INSIDE the white card as a regular row instead. Empty
+            // title shrinks the header strip to its minimum; the actual "蓝牙音质 · LHDC" goes
+            // on the first child row below.
+            PrefRef.setTitle(category, "");
             PrefRef.setOrder(category, order);
             PrefRef.addPreference(container, category);
             insertionParent = category;
             firstChildOrder = 0;
-        } else {
-            header = newOf(context, COUI_PREFERENCE, ANDX_PREFERENCE);
-            if (header != null) {
-                cloneVisualStyleFrom(header, prefTemplate);
-                PrefRef.setKey(header, "melody_codec_lsp_header");
-                PrefRef.setTitle(header, Strings.CODEC_BLOCK_TITLE);
-                PrefRef.setSelectable(header, false);
-                PrefRef.setIconSpaceReserved(header, false);
-                PrefRef.setPersistent(header, false);
-                PrefRef.setWidgetLayoutResource(header, 0);
-                PrefRef.setOrder(header, order);
-                PrefRef.addPreference(container, header);
-                firstChildOrder = order + 1;
-            }
+        }
+
+        // First child row — header. Lives inside the white card whether or not we wrapped it
+        // in a Category, so the visual is "蓝牙音质 · LHDC" stacked above 播放质量 / 采样率 in
+        // a single connected card. Non-selectable; no click ripple.
+        header = newOf(context, COUI_PREFERENCE, ANDX_PREFERENCE);
+        if (header != null) {
+            cloneVisualStyleFrom(header, prefTemplate);
+            PrefRef.setKey(header, "melody_codec_lsp_header");
+            PrefRef.setTitle(header, Strings.CODEC_BLOCK_TITLE);
+            PrefRef.setSelectable(header, false);
+            PrefRef.setIconSpaceReserved(header, false);
+            PrefRef.setPersistent(header, false);
+            PrefRef.setWidgetLayoutResource(header, 0);
+            PrefRef.setOrder(header, firstChildOrder);
+            PrefRef.addPreference(insertionParent, header);
+            firstChildOrder++;
         }
 
         // Plain Preference rows for quality and sample rate: their click handlers will pop a
@@ -131,8 +139,11 @@ public final class CodecBlockBuilder {
         }
 
         Object codecDisplay;
-        if (category != null) codecDisplay = category;
-        else if (header != null) codecDisplay = header;
+        // codecDisplay is the row whose title CodecController updates to show
+        // "蓝牙音质 · LHDC" / freshness stamps. Always prefer the header row (lives inside the
+        // card); fall back to whichever child still rendered if header construction failed.
+        if (header != null) codecDisplay = header;
+        else if (category != null) codecDisplay = category;
         else if (quality != null) codecDisplay = quality;
         else if (sampleRate != null) codecDisplay = sampleRate;
         else codecDisplay = remember;
