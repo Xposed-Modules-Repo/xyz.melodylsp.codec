@@ -289,13 +289,36 @@ public final class PrefRef {
         // Last resort: walk fields recursively up to depth 2 and pick anything whose type is
         // androidx.preference.PreferenceScreen. The class name itself is preserved by R8 even
         // when method / field names are minified.
-        Object found = findPreferenceScreenInFields(fragment, 2);
-        if (found == null) {
+        Object found = findPreferenceScreenInFields(fragment, 3);
+        if (found == null && looksLikePreferenceFragment(fragment)) {
             xyz.melodylsp.codec.util.MLog.w(
                     "getPreferenceScreen: no PreferenceScreen found via methods or field scan; "
                             + "fragment class=" + fragment.getClass().getName());
         }
         return found;
+    }
+
+    private static boolean looksLikePreferenceFragment(Object fragment) {
+        if (fragment == null) return false;
+        Class<?> cls = fragment.getClass();
+        while (cls != null && cls != Object.class) {
+            String name = cls.getName();
+            if ("androidx.preference.g".equals(name)
+                    || name.startsWith("com.coui.appcompat.preference.")
+                    || name.contains("PreferenceFragment")) {
+                return true;
+            }
+            for (java.lang.reflect.Field f : cls.getDeclaredFields()) {
+                String ft = f.getType().getName();
+                if ("androidx.preference.k".equals(ft)
+                        || ft.contains("PreferenceManager")
+                        || ft.contains("PreferenceScreen")) {
+                    return true;
+                }
+            }
+            cls = cls.getSuperclass();
+        }
+        return false;
     }
 
     private static Object findPreferenceScreenInFields(Object root, int maxDepth) {

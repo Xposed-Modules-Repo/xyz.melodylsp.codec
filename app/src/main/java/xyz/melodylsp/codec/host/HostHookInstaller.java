@@ -57,14 +57,15 @@ public final class HostHookInstaller {
     private static final String CLASS_ONE_SPACE_ACTIVITY =
             "com.oplus.melody.onespace.OneSpaceDetailActivity";
     /**
-     * The shared base class for every OPLUS Preference-Fragment in the host APK
-     * ({@code DetailMainPreferenceFragment}, {@code MoreSettingFragment},
-     * {@code HighAudioPreferenceFragment}, {@code OneSpaceListFragment}, &c.). The package /
-     * class name {@code com.oplus.melody.ui.base.c} is preserved by R8 because the host hand-
-     * rolls reflection against this exact FQN. Hooking its {@code onViewCreated} gives us a
-     * single, stable entrypoint that fires for every such fragment.
+     * Legacy Melody base Fragment. Older builds routed most Preference surfaces through this
+     * class; newer builds split real Preference screens into {@code ui.base.b} /
+     * {@code com.coui.appcompat.preference.h} / {@code androidx.preference.g}. We hook all of
+     * them by structure below so short R8 fragment names can change without killing injection.
      */
     private static final String CLASS_BASE_PREFERENCE_FRAGMENT = "com.oplus.melody.ui.base.c";
+    private static final String CLASS_BASE_COUI_PREFERENCE_FRAGMENT = "com.oplus.melody.ui.base.b";
+    private static final String CLASS_COUI_PREFERENCE_FRAGMENT = "com.coui.appcompat.preference.h";
+    private static final String CLASS_ANDROIDX_PREFERENCE_FRAGMENT = "androidx.preference.g";
 
     /** {@code PreferenceCategory.setKey(cls.getSimpleName())} stamps this on the Hi-Res item. */
     private static final String KEY_HIRES_ITEM = "HiQualityAudioItem";
@@ -197,32 +198,40 @@ public final class HostHookInstaller {
     }
 
     /**
-     * Hook the shared OPLUS preference-fragment base class. Every OPLUS PreferenceFragment in
-     * the host APK extends {@code com.oplus.melody.ui.base.c}; hooking its {@code onViewCreated}
-     * gives us a single firing point covering DetailMainPreferenceFragment,
-     * MoreSettingFragment, HighAudioPreferenceFragment, OneSpaceListFragment, and any other
-     * subclass. We then dispatch on the PreferenceScreen's contents to figure out which
-     * surface we're on (by looking for HiQualityAudioItem / pref_noise_menu_category / &c.).
+     * Hook every known PreferenceFragment-shaped base class, from Melody's wrappers down to the
+     * bundled AndroidX implementation. Melody 16.7.1 moved DetailMain to an outer plain
+     * Fragment plus an inner {@code DetailMainPreferenceFragment}; the inner class name is
+     * R8-shortened, but its PreferenceFragment base chain is still discoverable.
      */
     private void hookBasePreferenceFragment() {
-        Class<?> baseCls = loadHostClass(CLASS_BASE_PREFERENCE_FRAGMENT);
-        if (baseCls == null) {
-            MLog.w("Base preference fragment class not found");
-            return;
+        String[] candidates = {
+                CLASS_BASE_PREFERENCE_FRAGMENT,
+                CLASS_BASE_COUI_PREFERENCE_FRAGMENT,
+                CLASS_COUI_PREFERENCE_FRAGMENT,
+                CLASS_ANDROIDX_PREFERENCE_FRAGMENT
+        };
+        java.util.Set<Method> hooked = new java.util.HashSet<>();
+        int count = 0;
+        for (String name : candidates) {
+            Class<?> cls = loadHostClass(name);
+            if (cls == null) continue;
+            Method onViewCreated = findOnViewCreated(cls);
+            if (onViewCreated == null || !hooked.add(onViewCreated)) continue;
+            module.hook(onViewCreated).intercept(chain -> {
+                Object result = chain.proceed();
+                Object fragment = chain.getThisObject();
+                // PreferenceScreen items often arrive asynchronously after onViewCreated; retry
+                // for long enough to catch delayed WhitelistConfig / fragment transactions.
+                scheduleSurfaceDispatch(fragment, /* attempt= */ 0);
+                return result;
+            });
+            count++;
+            MLog.event("preference.fragment.hooked",
+                    "class", name, "methodOwner", onViewCreated.getDeclaringClass().getName());
         }
-        Method onViewCreated = findOnViewCreated(baseCls);
-        if (onViewCreated == null) {
-            MLog.w("Base preference fragment onViewCreated(View,Bundle) not found");
-            return;
+        if (count == 0) {
+            MLog.w("No preference fragment onViewCreated hook installed");
         }
-        module.hook(onViewCreated).intercept(chain -> {
-            Object result = chain.proceed();
-            Object fragment = chain.getThisObject();
-            // PreferenceScreen items often arrive asynchronously after onViewCreated; retry a
-            // few times spaced 800 ms apart to catch the moment the anchors land.
-            scheduleSurfaceDispatch(fragment, /* attempt= */ 0);
-            return result;
-        });
     }
 
     private void scheduleSurfaceDispatch(Object fragment, int attempt) {
@@ -765,16 +774,86 @@ public final class HostHookInstaller {
     @SuppressWarnings("unchecked")
     private static void collectFromManager(Object fragmentManager, java.util.List<Object> out, int depth) {
         if (fragmentManager == null || depth > 2) return;
-        Object list = invokeNoArg(fragmentManager, "getFragments");
-        if (!(list instanceof java.util.List)) return;
-        for (Object fragment : (java.util.List<Object>) list) {
+        java.util.List<Object> fragments = extractFragmentsFromManager(fragmentManager);
+        if (fragments.isEmpty()) return;
+        for (Object fragment : fragments) {
             if (fragment == null) continue;
-            out.add(fragment);
+            if (!out.contains(fragment)) out.add(fragment);
             Object childFm = invokeNoArg(fragment, "getChildFragmentManager");
             if (childFm != null && childFm != fragmentManager) {
                 collectFromManager(childFm, out, depth + 1);
             }
         }
+    }
+
+    /**
+     * AndroidX FragmentManager's public {@code getFragments()} name is not stable inside
+     * vendor apps: in Melody 16.7.1 it is stripped/renamed and the actual list lives in a
+     * FragmentStore field. Recover by scanning fields for Lists whose elements inherit
+     * {@code androidx.fragment.app.Fragment}.
+     */
+    private static java.util.List<Object> extractFragmentsFromManager(Object fragmentManager) {
+        java.util.List<Object> out = new java.util.ArrayList<>();
+        Object direct = invokeNoArg(fragmentManager, "getFragments");
+        appendFragmentList(direct, out);
+        appendFragmentListsFromFields(fragmentManager, out, 2, new IdentityHashMap<>());
+        return out;
+    }
+
+    private static void appendFragmentListsFromFields(
+            Object root,
+            java.util.List<Object> out,
+            int depth,
+            IdentityHashMap<Object, Boolean> seen) {
+        if (root == null || depth < 0 || seen.containsKey(root)) return;
+        seen.put(root, Boolean.TRUE);
+        Class<?> cls = root.getClass();
+        while (cls != null && cls != Object.class) {
+            for (java.lang.reflect.Field f : cls.getDeclaredFields()) {
+                Class<?> ft = f.getType();
+                if (ft.isPrimitive() || ft.isArray()) continue;
+                if (ft == String.class || ft.getName().startsWith("java.lang.")) continue;
+                try {
+                    f.setAccessible(true);
+                    Object value = f.get(root);
+                    if (value == null) continue;
+                    if (appendFragmentList(value, out)) continue;
+                    if (depth > 0 && shouldRecurseFragmentField(value)) {
+                        appendFragmentListsFromFields(value, out, depth - 1, seen);
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+            cls = cls.getSuperclass();
+        }
+    }
+
+    private static boolean appendFragmentList(Object value, java.util.List<Object> out) {
+        if (!(value instanceof java.util.List)) return false;
+        boolean any = false;
+        for (Object item : (java.util.List<?>) value) {
+            if (!isFragmentLike(item)) continue;
+            any = true;
+            if (!out.contains(item)) out.add(item);
+        }
+        return any;
+    }
+
+    private static boolean shouldRecurseFragmentField(Object value) {
+        String name = value.getClass().getName();
+        return name.startsWith("androidx.fragment.")
+                || name.startsWith("androidx.lifecycle.")
+                || name.startsWith("com.oplus.melody.");
+    }
+
+    private static boolean isFragmentLike(Object obj) {
+        if (obj == null) return false;
+        Class<?> cls = obj.getClass();
+        while (cls != null && cls != Object.class) {
+            if ("androidx.fragment.app.Fragment".equals(cls.getName())) return true;
+            cls = cls.getSuperclass();
+        }
+        return false;
     }
 
     private static Object invokeNoArg(Object target, String name) {
