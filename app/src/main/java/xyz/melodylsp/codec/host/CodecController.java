@@ -28,11 +28,16 @@ import android.widget.Toast;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.text.SimpleDateFormat;
+import java.util.Enumeration;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
+
+import dalvik.system.DexFile;
 
 import xyz.melodylsp.codec.bridge.CodecRequest;
 import xyz.melodylsp.codec.bridge.CodecSnapshot;
@@ -74,6 +79,7 @@ public final class CodecController {
     private final Map<Object, Subscription> subscriptions = new HashMap<>();
     private final AtomicReference<CodecSnapshot> lastSnapshot = new AtomicReference<>();
     private final xyz.melodylsp.codec.leaudio.LeAudioManager leAudioManager;
+    private final Set<String> classicRestorePending = new LinkedHashSet<>();
 
     public CodecController(
             Context context,
@@ -104,6 +110,13 @@ public final class CodecController {
             if (sub.mac == null || !sub.mac.equals(mac)) continue;
             applyLeAudioToSwitch(sub);
             if (leOn) {
+                if (classicRestorePending.contains(mac)) {
+                    // Disable is in flight and stale LE replies may still report enabled=true.
+                    // Keep the classic rows visible while the A2DP profile comes back.
+                    restoreClassicAudioRows(sub);
+                    scheduleClassicAudioRefresh(sub);
+                    continue;
+                }
                 // LC3 takes over the LE transport and A2DP reports DISCONNECTED. Keep the
                 // injected block interactive instead of treating that as "no earphone".
                 sub.connected = Boolean.TRUE;
@@ -115,12 +128,11 @@ public final class CodecController {
                     renderUnknown(sub);
                 }
             } else {
+                classicRestorePending.remove(mac);
                 // LE Audio turned off: A2DP is coming back, so re-read the real codec status
                 // instead of trusting the now-stale snapshot.
-                renderUnknown(sub);
-                refreshSnapshot(sub);
-                refreshSnapshotDelayed(sub, 1200L);
-                refreshSnapshotDelayed(sub, 3200L);
+                restoreClassicAudioRows(sub);
+                scheduleClassicAudioRefresh(sub);
             }
         }
     }
@@ -284,11 +296,11 @@ public final class CodecController {
         String negative = xyz.melodylsp.codec.leaudio.LeAudioStrings.CANCEL;
 
         if (showMelodyAlertDialog(activity, title, message, positive, negative,
-                () -> leAudioManager.requestToggle(sub.mac, enable))) {
+                () -> requestLeAudioToggle(sub, enable))) {
             return;
         }
         if (showStyledAppCompatDialog(activity, title, message, positive, negative,
-                () -> leAudioManager.requestToggle(sub.mac, enable))) {
+                () -> requestLeAudioToggle(sub, enable))) {
             return;
         }
 
@@ -298,13 +310,35 @@ public final class CodecController {
                 .setMessage(message)
                 .setPositiveButton(positive, (d, w) -> {
                     d.dismiss();
-                    leAudioManager.requestToggle(sub.mac, enable);
+                    requestLeAudioToggle(sub, enable);
                 })
                 .setNegativeButton(negative, (d, w) -> d.dismiss())
                 .setCancelable(true)
                 .create();
-        dialog.setOnShowListener(d -> tintFallbackDialog(dialog));
+        dialog.setOnShowListener(d -> {
+            tintFallbackDialog(dialog);
+            mainHandler.postDelayed(() -> tintFallbackDialog(dialog), 60L);
+        });
         dialog.show();
+        tintFallbackDialog(dialog);
+    }
+
+    private void requestLeAudioToggle(Subscription sub, boolean enable) {
+        if (!enable) {
+            classicRestorePending.add(sub.mac);
+            restoreClassicAudioRowsForMac(sub.mac);
+        } else {
+            classicRestorePending.remove(sub.mac);
+        }
+        leAudioManager.requestToggle(sub.mac, enable);
+        if (!enable) {
+            scheduleClassicAudioRefreshForMac(sub.mac);
+            mainHandler.postDelayed(() -> {
+                if (classicRestorePending.remove(sub.mac) && leAudioManager.isEnabled(sub.mac)) {
+                    onLeAudioStateChanged(sub.mac);
+                }
+            }, 12_000L);
+        }
     }
 
     private interface ConfirmAction {
@@ -321,42 +355,25 @@ public final class CodecController {
         String[] builders = {
                 "R7.b",
                 "D2.e",
+                "E4.b",
+                "h1.e",
                 "com.oplus.melody.common.widget.MelodyAlertDialogBuilder",
                 "o6.C1381b",
                 "o6.b",
                 "B2.e"
         };
+        Set<String> builderNames = new LinkedHashSet<>();
         for (String name : builders) {
+            builderNames.add(name);
+        }
+        discoverMelodyDialogBuilders(activity, builderNames);
+        for (String name : builderNames) {
             try {
                 Class<?> builderCls = Class.forName(name, false, activity.getClassLoader());
+                if (!isHostCouiDialogBuilderClass(builderCls)) continue;
                 Object builder = newMelodyDialogBuilder(activity, builderCls);
                 if (builder == null) continue;
-                invokeDialogBuilder(builder, "setTitle",
-                        new Class[]{CharSequence.class}, new Object[]{title});
-                invokeDialogBuilder(builder, "setMessage",
-                        new Class[]{CharSequence.class}, new Object[]{message});
-                android.content.DialogInterface.OnClickListener ok = (dialog, which) -> {
-                    dialog.dismiss();
-                    action.run();
-                };
-                android.content.DialogInterface.OnClickListener cancel =
-                        (dialog, which) -> dialog.dismiss();
-                invokeDialogBuilder(builder, "setPositiveButton",
-                        new Class[]{
-                                CharSequence.class,
-                                android.content.DialogInterface.OnClickListener.class
-                        },
-                        new Object[]{positive, ok});
-                invokeDialogBuilder(builder, "setNegativeButton",
-                        new Class[]{
-                                CharSequence.class,
-                                android.content.DialogInterface.OnClickListener.class
-                        },
-                        new Object[]{negative, cancel});
-                invokeDialogBuilder(builder, "setCancelable",
-                        new Class[]{boolean.class}, new Object[]{true});
-                Method show = builderCls.getMethod("show");
-                show.invoke(builder);
+                configureAndShowDialog(builder, title, message, positive, negative, action);
                 MLog.event("le.melody.dialog", "builder", name);
                 return true;
             } catch (Throwable t) {
@@ -388,32 +405,7 @@ public final class CodecController {
                 }
                 Object builder = newHostStyledBuilder(activity, builderCls);
                 if (builder == null) continue;
-                invokeDialogBuilder(builder, "setTitle",
-                        new Class[]{CharSequence.class}, new Object[]{title});
-                invokeDialogBuilder(builder, "setMessage",
-                        new Class[]{CharSequence.class}, new Object[]{message});
-                android.content.DialogInterface.OnClickListener ok = (dialog, which) -> {
-                    dialog.dismiss();
-                    action.run();
-                };
-                android.content.DialogInterface.OnClickListener cancel =
-                        (dialog, which) -> dialog.dismiss();
-                invokeDialogBuilder(builder, "setPositiveButton",
-                        new Class[]{
-                                CharSequence.class,
-                                android.content.DialogInterface.OnClickListener.class
-                        },
-                        new Object[]{positive, ok});
-                invokeDialogBuilder(builder, "setNegativeButton",
-                        new Class[]{
-                                CharSequence.class,
-                                android.content.DialogInterface.OnClickListener.class
-                        },
-                        new Object[]{negative, cancel});
-                invokeDialogBuilder(builder, "setCancelable",
-                        new Class[]{boolean.class}, new Object[]{true});
-                Method show = builderCls.getMethod("show");
-                show.invoke(builder);
+                configureAndShowDialog(builder, title, message, positive, negative, action);
                 MLog.event("le.melody.dialog", "builder", "appcompat+coui-style",
                         "class", builderName);
                 return true;
@@ -423,6 +415,105 @@ public final class CodecController {
             MLog.w("LE Audio styled AppCompat dialog failed", t);
             return false;
         }
+    }
+
+    private static void discoverMelodyDialogBuilders(Activity activity, Set<String> out) {
+        DexFile dex = null;
+        try {
+            String sourceDir = activity.getApplicationInfo() != null
+                    ? activity.getApplicationInfo().sourceDir : null;
+            if (sourceDir == null) return;
+            dex = new DexFile(sourceDir);
+            Enumeration<String> entries = dex.entries();
+            int inspected = 0;
+            int added = 0;
+            while (entries.hasMoreElements() && inspected < 2000) {
+                String name = entries.nextElement();
+                if (!maybeHostDialogBuilderName(name)) continue;
+                inspected++;
+                try {
+                    Class<?> cls = Class.forName(name, false, activity.getClassLoader());
+                    if (isHostCouiDialogBuilderClass(cls)) {
+                        out.add(name);
+                        added++;
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+            if (added > 0) {
+                MLog.event("le.melody.dialog.discovered", "count", added);
+            }
+        } catch (Throwable t) {
+            MLog.w("LE Audio dialog dex scan failed", t);
+        } finally {
+            if (dex != null) {
+                try {
+                    dex.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
+    private static boolean maybeHostDialogBuilderName(String name) {
+        if (name == null) return false;
+        if (name.startsWith("android.")
+                || name.startsWith("androidx.")
+                || name.startsWith("java.")
+                || name.startsWith("kotlin.")
+                || name.startsWith("kotlinx.")) {
+            return false;
+        }
+        if (name.contains("AlertDialog") || name.contains("DialogBuilder")) return true;
+        int dot = name.indexOf('.');
+        if (dot <= 0 || dot != name.lastIndexOf('.')) return false;
+        String pkg = name.substring(0, dot);
+        String simple = name.substring(dot + 1);
+        return pkg.length() <= 3 && simple.length() <= 3;
+    }
+
+    private static boolean isHostCouiDialogBuilderClass(Class<?> cls) {
+        if (!isDialogBuilderShape(cls)) return false;
+        if (isAppCompatBuilderClass(cls)) return false;
+        return hasAppCompatBuilderInHierarchy(cls);
+    }
+
+    private static boolean isDialogBuilderShape(Class<?> cls) {
+        if (cls == null) return false;
+        try {
+            cls.getConstructor(Context.class);
+        } catch (NoSuchMethodException e) {
+            try {
+                cls.getConstructor(Context.class, int.class);
+            } catch (NoSuchMethodException ignored) {
+                return false;
+            }
+        } catch (Throwable ignored) {
+            return false;
+        }
+        return findMethod(cls, "setTitle", CharSequence.class) != null
+                && findMethod(cls, "setMessage", CharSequence.class) != null
+                && findMethod(cls, "setPositiveButton", CharSequence.class,
+                android.content.DialogInterface.OnClickListener.class) != null
+                && findMethod(cls, "setNegativeButton", CharSequence.class,
+                android.content.DialogInterface.OnClickListener.class) != null
+                && findMethod(cls, "show") != null;
+    }
+
+    private static boolean isAppCompatBuilderClass(Class<?> cls) {
+        String name = cls != null ? cls.getName() : "";
+        return "androidx.appcompat.app.g$a".equals(name)
+                || "androidx.appcompat.app.AlertDialog$Builder".equals(name)
+                || "androidx.appcompat.app.AlertDialog$a".equals(name);
+    }
+
+    private static boolean hasAppCompatBuilderInHierarchy(Class<?> cls) {
+        Class<?> c = cls;
+        while (c != null && c != Object.class) {
+            if (isAppCompatBuilderClass(c)) return true;
+            c = c.getSuperclass();
+        }
+        return false;
     }
 
     private static Object newMelodyDialogBuilder(Activity activity, Class<?> builderCls) {
@@ -478,6 +569,45 @@ public final class CodecController {
         }
     }
 
+    private static void configureAndShowDialog(
+            Object builder,
+            String title,
+            String message,
+            String positive,
+            String negative,
+            ConfirmAction action) throws Exception {
+        invokeDialogBuilder(builder, "setTitle",
+                new Class[]{CharSequence.class}, new Object[]{title});
+        invokeDialogBuilder(builder, "setMessage",
+                new Class[]{CharSequence.class}, new Object[]{message});
+        android.content.DialogInterface.OnClickListener ok = (dialog, which) -> {
+            dialog.dismiss();
+            action.run();
+        };
+        android.content.DialogInterface.OnClickListener cancel =
+                (dialog, which) -> dialog.dismiss();
+        invokeDialogBuilder(builder, "setPositiveButton",
+                new Class[]{
+                        CharSequence.class,
+                        android.content.DialogInterface.OnClickListener.class
+                },
+                new Object[]{positive, ok});
+        invokeDialogBuilder(builder, "setNegativeButton",
+                new Class[]{
+                        CharSequence.class,
+                        android.content.DialogInterface.OnClickListener.class
+                },
+                new Object[]{negative, cancel});
+        invokeDialogBuilder(builder, "setCancelable",
+                new Class[]{boolean.class}, new Object[]{true});
+        Method show = findMethod(builder.getClass(), "show");
+        if (show == null) {
+            throw new NoSuchMethodException("show");
+        }
+        show.setAccessible(true);
+        show.invoke(builder);
+    }
+
     private static void invokeDialogBuilder(
             Object builder, String name, Class<?>[] params, Object[] args) throws Exception {
         Method method = findMethod(builder.getClass(), name, params);
@@ -504,10 +634,15 @@ public final class CodecController {
         try {
             int blue = Color.rgb(0, 105, 255);
             int text = Color.rgb(25, 25, 25);
+            if (dialog.getWindow() != null) {
+                dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.WHITE));
+            }
             View decor = dialog.getWindow() != null ? dialog.getWindow().getDecorView() : null;
             tintDialogText(decor, text);
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(blue);
-            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(blue);
+            TextView positive = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            TextView negative = dialog.getButton(AlertDialog.BUTTON_NEGATIVE);
+            if (positive != null) positive.setTextColor(blue);
+            if (negative != null) negative.setTextColor(blue);
         } catch (Throwable ignored) {
         }
     }
@@ -534,6 +669,55 @@ public final class CodecController {
         boolean enabled = leAudioManager.isEnabled(sub.mac);
         PrefRef.setChecked(sw, enabled);
         PrefRef.setSummary(sw, enabled ? Strings.LE_AUDIO_SUMMARY_ON : Strings.LE_AUDIO_SUMMARY_OFF);
+    }
+
+    private void restoreClassicAudioRowsForMac(String mac) {
+        if (mac == null) return;
+        classicRestorePending.add(mac);
+        for (Subscription sub : subscriptions.values()) {
+            if (mac.equals(sub.mac)) {
+                restoreClassicAudioRows(sub);
+            }
+        }
+    }
+
+    private void scheduleClassicAudioRefreshForMac(String mac) {
+        if (mac == null) return;
+        for (Subscription sub : subscriptions.values()) {
+            if (mac.equals(sub.mac)) {
+                scheduleClassicAudioRefresh(sub);
+            }
+        }
+    }
+
+    private void restoreClassicAudioRows(Subscription sub) {
+        sub.connected = Boolean.TRUE;
+        if (sub.prefs.codecDisplay != null) {
+            PrefRef.setTitle(sub.prefs.codecDisplay,
+                    Strings.CODEC_BLOCK_TITLE + " : " + Strings.STATE_CODEC_UNKNOWN);
+        }
+        PrefRef.setVisible(sub.prefs.qualityOption, true);
+        PrefRef.setVisible(sub.prefs.sampleRateOption, true);
+        PrefRef.setSummary(sub.prefs.qualityOption, Strings.STATE_CODEC_UNKNOWN);
+        PrefRef.setSummary(sub.prefs.sampleRateOption, Strings.STATE_CODEC_UNKNOWN);
+        setBlockDisabled(sub, false);
+        if (sub.prefs.leAudioSwitch != null) {
+            PrefRef.setVisible(sub.prefs.leAudioSwitch, leAudioManager.isSupported(sub.mac));
+            PrefRef.setChecked(sub.prefs.leAudioSwitch, false);
+            PrefRef.setSummary(sub.prefs.leAudioSwitch, Strings.LE_AUDIO_SUMMARY_OFF);
+        }
+        if (sub.prefs.rememberToggle != null) {
+            PrefRef.setChecked(sub.prefs.rememberToggle, prefs.isRemembered(sub.mac));
+        }
+    }
+
+    private void scheduleClassicAudioRefresh(Subscription sub) {
+        refreshSnapshot(sub);
+        refreshSnapshotDelayed(sub, 600L);
+        refreshSnapshotDelayed(sub, 1200L);
+        refreshSnapshotDelayed(sub, 2500L);
+        refreshSnapshotDelayed(sub, 4500L);
+        refreshSnapshotDelayed(sub, 7000L);
     }
 
     /**
@@ -1115,7 +1299,7 @@ public final class CodecController {
     private void renderUnknown(Subscription sub) {
         // When LE Audio is enabled the A2DP codec status is unavailable (the device is on the
         // LE transport), but that is NOT a disconnect — show LC3 and keep the switch usable.
-        if (leAudioManager.isEnabled(sub.mac)) {
+        if (shouldRenderLeAudioActive(sub)) {
             renderLeAudioActive(sub);
             return;
         }
@@ -1138,10 +1322,11 @@ public final class CodecController {
         // LE Audio override (TODO B): when LE Audio is on, the device runs LC3 over the LE
         // transport, so the A2DP codec / quality / sample-rate controls do not apply. Show
         // "蓝牙音质 : LC3" and hide the quality + sample-rate rows on BOTH surfaces.
-        if (leAudioManager.isEnabled(sub.mac)) {
+        if (shouldRenderLeAudioActive(sub)) {
             renderLeAudioActive(sub);
             return;
         }
+        classicRestorePending.remove(sub.mac);
         if (Boolean.FALSE.equals(sub.connected)) {
             renderUnknown(sub);
             return;
@@ -1167,6 +1352,10 @@ public final class CodecController {
         if (sub.prefs.rememberToggle != null) {
             PrefRef.setChecked(sub.prefs.rememberToggle, prefs.isRemembered(sub.mac));
         }
+    }
+
+    private boolean shouldRenderLeAudioActive(Subscription sub) {
+        return leAudioManager.isEnabled(sub.mac) && !classicRestorePending.contains(sub.mac);
     }
 
     private void renderLeAudioActive(Subscription sub) {
@@ -1371,7 +1560,8 @@ public final class CodecController {
                         int state = intent.getIntExtra(EXTRA_CONNECTION_STATE, -1);
                         if (state != -1 && state != BluetoothProfile.STATE_CONNECTED) {
                             mainHandler.post(() -> {
-                                if (leAudioManager.isEnabled(mac)) {
+                                if (leAudioManager.isEnabled(mac)
+                                        && !classicRestorePending.contains(mac)) {
                                     connected = Boolean.TRUE;
                                     renderLeAudioActive(Subscription.this);
                                     return;
@@ -1391,7 +1581,8 @@ public final class CodecController {
                             refreshSnapshotDelayed(Subscription.this, 3200L);
                         }
                     } else if (ACTION_CODEC_CONFIG_CHANGED.equals(action)) {
-                        if (leAudioManager.isEnabled(mac)) {
+                        if (leAudioManager.isEnabled(mac)
+                                && !classicRestorePending.contains(mac)) {
                             renderLeAudioActive(Subscription.this);
                             return;
                         }
