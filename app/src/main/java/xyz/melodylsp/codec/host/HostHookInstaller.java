@@ -1,5 +1,6 @@
 package xyz.melodylsp.codec.host;
 
+import android.app.Activity;
 import android.app.Application;
 import android.content.Context;
 import android.content.pm.PackageInfo;
@@ -88,6 +89,7 @@ public final class HostHookInstaller {
     private final Set<Object> attachedScreens =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private CodecController controller;
+    private boolean activityScanRegistered;
 
     public HostHookInstaller(MelodyCodecLspEntry module, ClassLoader classLoader) {
         this.module = module;
@@ -99,6 +101,7 @@ public final class HostHookInstaller {
         hookHighAudio();
         hookBasePreferenceFragment();
         hookOneSpace();
+        hookDetailMainActivity();
         hookOneSpaceActivity();
     }
 
@@ -135,8 +138,62 @@ public final class HostHookInstaller {
         SettingsGlobalFallback fallback = new SettingsGlobalFallback(app);
         CodecBridgeClient bridge = new CodecBridgeClient(app, reflect, fallback);
         controller = new CodecController(app, reflect, bridge, prefs);
+        registerActivityScanCallbacks(app);
 
         MLog.event("controller.ready", "version", hostVersion);
+    }
+
+    /**
+     * Generic update-resilience fallback. Direct hooks against host fragments are always at
+     * risk because Melody's Preference fragments and their base class can be R8-renamed between
+     * app releases. ActivityLifecycleCallbacks is a framework API, so it survives host updates:
+     * whenever any Melody Activity resumes, scan its support FragmentManager and dispatch only
+     * PreferenceScreens carrying known codec-surface markers.
+     */
+    private synchronized void registerActivityScanCallbacks(Application app) {
+        if (activityScanRegistered) return;
+        try {
+            app.registerActivityLifecycleCallbacks(new ActivityScanCallbacks());
+            activityScanRegistered = true;
+            MLog.event("activity.scan.registered");
+        } catch (Throwable t) {
+            MLog.w("activity.scan.register failed", t);
+        }
+    }
+
+    private final class ActivityScanCallbacks
+            implements Application.ActivityLifecycleCallbacks {
+        @Override
+        public void onActivityCreated(Activity activity, Bundle savedInstanceState) {
+        }
+
+        @Override
+        public void onActivityStarted(Activity activity) {
+        }
+
+        @Override
+        public void onActivityResumed(Activity activity) {
+            if (activity == null) return;
+            String name = activity.getClass().getName();
+            if (name == null || !name.startsWith("com.oplus.melody.")) return;
+            scheduleKnownFragmentScan(activity, /* attempt= */ 0, "activity.scan");
+        }
+
+        @Override
+        public void onActivityPaused(Activity activity) {
+        }
+
+        @Override
+        public void onActivityStopped(Activity activity) {
+        }
+
+        @Override
+        public void onActivitySaveInstanceState(Activity activity, Bundle outState) {
+        }
+
+        @Override
+        public void onActivityDestroyed(Activity activity) {
+        }
     }
 
     /**
@@ -391,7 +448,8 @@ public final class HostHookInstaller {
         // the card background; the hidden noise-menu Category renders as bare rows here.
         CodecPreferences prefs = CodecBlockBuilder.buildAndInsert(
                 themedContext, screen, targetOrder,
-                /* wrapInCategory= */ true, /* includeRemember= */ false);
+                /* wrapInCategory= */ true, /* includeRemember= */ false,
+                /* includeLeAudio= */ true);
         if (prefs == null) return false;
         setCategoryTopMarginZero(prefs.category);
         // Add bottom padding to the RecyclerView so the last host row ("耳机设置") is not
@@ -531,6 +589,40 @@ public final class HostHookInstaller {
     }
 
     /**
+     * DetailMain's Activity FQN is manifest-stable while its actual PreferenceFragment and
+     * shared base class can move after a Melody update. Hook the stable Activity too and scan
+     * for the same PreferenceScreen markers used by the direct fragment hooks.
+     */
+    private void hookDetailMainActivity() {
+        Class<?> actCls = loadHostClass(CLASS_DETAIL_MAIN_ACTIVITY);
+        if (actCls == null) {
+            MLog.w("DetailMainActivity class not found; stable fallback unavailable");
+            return;
+        }
+        Method onResume = findHostDeclaredMethod(actCls, "onResume");
+        if (onResume == null) {
+            onResume = findHostDeclaredMethod(actCls, "onStart");
+        }
+        if (onResume == null) {
+            MLog.w("DetailMainActivity onResume/onStart not found");
+            return;
+        }
+        module.hook(onResume).intercept(chain -> {
+            Object result = chain.proceed();
+            try {
+                Object activity = chain.getThisObject();
+                if (activity != null && actCls.isInstance(activity)) {
+                    scheduleKnownFragmentScan(activity, /* attempt= */ 0, "detailmain.activity");
+                }
+            } catch (Throwable t) {
+                MLog.e("DetailMain activity scan failed", t);
+            }
+            return result;
+        });
+        MLog.event("detailmain.activity.hooked");
+    }
+
+    /**
      * Version-resilient OneSpace fallback (TODO A1). The direct fragment hook
      * ({@link #hookOneSpace}) targets the R8-hashed class {@code com.oplus.melody.onespace.d},
      * which is very likely to be renamed on the next host update (to {@code c} / {@code e} /
@@ -605,6 +697,47 @@ public final class HostHookInstaller {
                 scheduleOneSpaceFragmentScan(activity, attempt + 1);
             }
         }, attempt == 0 ? 300L : 800L);
+    }
+
+    /**
+     * Generic Activity -> FragmentManager scanner. It intentionally only routes screens with
+     * strong markers (Hi-Res / Equalizer / OneSpace / our own marker) so ordinary Melody
+     * preference pages cannot pick up the codec block through the last-resort category anchor.
+     */
+    private void scheduleKnownFragmentScan(Object activity, int attempt, String source) {
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            if (controller == null) return;
+            boolean found = false;
+            try {
+                java.util.List<Object> fragments = collectFragments(activity);
+                for (Object fragment : fragments) {
+                    Object screen = PrefRef.getPreferenceScreen(fragment);
+                    if (screen == null) continue;
+                    if (!isKnownCodecSurface(screen)) continue;
+                    found = true;
+                    if (attachedScreens.contains(screen) && hasCodecMarker(screen)) {
+                        continue;
+                    }
+                    scheduleSurfaceDispatch(fragment, /* attempt= */ 0);
+                    MLog.event(source + ".fragment_found",
+                            "fragment", fragment.getClass().getName());
+                }
+            } catch (Throwable t) {
+                MLog.e(source + " failed", t);
+                return;
+            }
+            if (!found && attempt < 12) {
+                scheduleKnownFragmentScan(activity, attempt + 1, source);
+            }
+        }, attempt == 0 ? 300L : 800L);
+    }
+
+    /** True when a PreferenceScreen is one of the surfaces we own or should recover. */
+    private static boolean isKnownCodecSurface(Object screen) {
+        return hasCodecMarker(screen)
+                || PrefRef.findPreference(screen, KEY_HIRES_ITEM) != null
+                || PrefRef.findPreference(screen, KEY_EQUALIZER_ITEM) != null
+                || isOneSpaceScreen(screen);
     }
 
     /** True when a PreferenceScreen carries any OneSpace-specific marker key. */

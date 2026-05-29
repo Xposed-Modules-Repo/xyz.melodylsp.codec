@@ -100,8 +100,8 @@ public final class LeAudioManager {
      */
     public void ensureTracking(String mac) {
         if (mac == null) return;
-        boolean sup = probeSupport(mac);
         boolean en = readEnabledFromPrefs(mac, isEnabled(mac));
+        boolean sup = probeSupport(mac) || en || isConnected(mac);
         supportedByMac.put(mac, sup);
         enabledByMac.put(mac, en);
         if (en) {
@@ -188,10 +188,21 @@ public final class LeAudioManager {
         if (!LeAudioIpc.TOKEN.equals(intent.getStringExtra(LeAudioIpc.EXTRA_TOKEN))) return;
         String mac = intent.getStringExtra(LeAudioIpc.EXTRA_MAC);
         if (mac == null) return;
-        boolean sup = intent.getBooleanExtra(LeAudioIpc.EXTRA_SUPPORTED, isSupported(mac));
-        boolean en = intent.getBooleanExtra(LeAudioIpc.EXTRA_ENABLED, isEnabled(mac));
+        boolean bridgeSup = intent.getBooleanExtra(LeAudioIpc.EXTRA_SUPPORTED, false);
+        boolean wasEnabled = isEnabled(mac);
+        boolean en = intent.getBooleanExtra(LeAudioIpc.EXTRA_ENABLED, wasEnabled);
         boolean connected = intent.getBooleanExtra(
                 LeAudioIpc.EXTRA_CONNECTED, isConnected(mac) || en);
+        boolean localSup = probeSupport(mac);
+        // The bluetooth process can only tell us whether the system has a LE Audio profile
+        // proxy. That is not the same thing as "this headset exposes LE Audio"; otherwise every
+        // phone with LE Audio support would show the switch for unsupported earbuds. Treat the
+        // bridge reply as authoritative for enabled/connected state, but require a per-device
+        // signal for support.
+        boolean sup = localSup || en || connected || wasEnabled;
+        if (bridgeSup && !sup) {
+            MLog.event("le.melody.support.bridge_ignored");
+        }
         supportedByMac.put(mac, sup);
         enabledByMac.put(mac, en);
         connectedByMac.put(mac, connected || en);
@@ -205,9 +216,20 @@ public final class LeAudioManager {
     private void refreshTrackedFromPrefsAndBridge(long delayMs) {
         mainHandler.postDelayed(() -> {
             for (String mac : enabledByMac.keySet()) {
+                boolean oldSup = isSupported(mac);
+                boolean oldEn = isEnabled(mac);
                 boolean en = readEnabledFromPrefs(mac, isEnabled(mac));
-                if (en != isEnabled(mac)) {
+                boolean sup = probeSupport(mac) || en || isConnected(mac) || oldEn;
+                boolean changed = false;
+                if (sup != oldSup) {
+                    supportedByMac.put(mac, sup);
+                    changed = true;
+                }
+                if (en != oldEn) {
                     enabledByMac.put(mac, en);
+                    changed = true;
+                }
+                if (changed) {
                     notifyChanged(mac);
                 }
                 queryBridge(mac);
@@ -232,6 +254,7 @@ public final class LeAudioManager {
         boolean changed = false;
         if (ACTION_LE_AUDIO_CONNECTION_STATE_CHANGED.equals(action)) {
             if (state == android.bluetooth.BluetoothProfile.STATE_CONNECTED) {
+                supportedByMac.put(mac, true);
                 enabledByMac.put(mac, true);
                 connectedByMac.put(mac, true);
                 changed = true;

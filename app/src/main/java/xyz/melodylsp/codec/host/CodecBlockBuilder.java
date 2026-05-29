@@ -56,7 +56,7 @@ public final class CodecBlockBuilder {
      *
      * @param wrapInCategory   true → DetailMain card style (PreferenceCategory wrapper).
      * @param includeRemember  true → include the "remember this earphone" SwitchPreference.
-     * @param includeLeAudio   true → include the LE Audio toggle (DetailMain only, TODO B1).
+     * @param includeLeAudio   true → include the LE Audio toggle.
      */
     public static CodecPreferences buildAndInsert(
             Context context, Object container, int order,
