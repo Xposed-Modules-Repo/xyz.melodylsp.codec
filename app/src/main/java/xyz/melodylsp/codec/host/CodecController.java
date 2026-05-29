@@ -117,6 +117,7 @@ public final class CodecController {
             } else {
                 // LE Audio turned off: A2DP is coming back, so re-read the real codec status
                 // instead of trusting the now-stale snapshot.
+                renderUnknown(sub);
                 refreshSnapshot(sub);
                 refreshSnapshotDelayed(sub, 1200L);
                 refreshSnapshotDelayed(sub, 3200L);
@@ -260,10 +261,10 @@ public final class CodecController {
     }
 
     /**
-     * Show a confirmation dialog in melody's Activity before toggling LE Audio. The COUI dialog
-     * builder cannot inflate in the background wirelesssettings process (it lacks a themed
-     * Activity context), so we use a standard {@code android.app.AlertDialog} here — melody has
-     * a live Activity with the COUI theme applied, so the dialog renders correctly.
+     * Show a confirmation dialog in melody's Activity before toggling LE Audio. COUI cannot
+     * inflate from a background privileged process, but it is safe with Melody's themed Activity;
+     * use host Melody/COUI builders first, then host AppCompat with COUI styles, and keep the
+     * framework dialog as a final fallback.
      */
     private void showLeAudioConfirmDialog(Subscription sub, boolean enable) {
         Activity activity = resolveLiveActivity(sub);
@@ -283,6 +284,10 @@ public final class CodecController {
         String negative = xyz.melodylsp.codec.leaudio.LeAudioStrings.CANCEL;
 
         if (showMelodyAlertDialog(activity, title, message, positive, negative,
+                () -> leAudioManager.requestToggle(sub.mac, enable))) {
+            return;
+        }
+        if (showStyledAppCompatDialog(activity, title, message, positive, negative,
                 () -> leAudioManager.requestToggle(sub.mac, enable))) {
             return;
         }
@@ -314,6 +319,8 @@ public final class CodecController {
             String negative,
             ConfirmAction action) {
         String[] builders = {
+                "R7.b",
+                "D2.e",
                 "com.oplus.melody.common.widget.MelodyAlertDialogBuilder",
                 "o6.C1381b",
                 "o6.b",
@@ -359,6 +366,65 @@ public final class CodecController {
         return false;
     }
 
+    private static boolean showStyledAppCompatDialog(
+            Activity activity,
+            String title,
+            String message,
+            String positive,
+            String negative,
+            ConfirmAction action) {
+        try {
+            String[] builderNames = {
+                    "androidx.appcompat.app.g$a",
+                    "androidx.appcompat.app.AlertDialog$Builder",
+                    "androidx.appcompat.app.AlertDialog$a"
+            };
+            for (String builderName : builderNames) {
+                Class<?> builderCls;
+                try {
+                    builderCls = Class.forName(builderName, false, activity.getClassLoader());
+                } catch (Throwable ignored) {
+                    continue;
+                }
+                Object builder = newHostStyledBuilder(activity, builderCls);
+                if (builder == null) continue;
+                invokeDialogBuilder(builder, "setTitle",
+                        new Class[]{CharSequence.class}, new Object[]{title});
+                invokeDialogBuilder(builder, "setMessage",
+                        new Class[]{CharSequence.class}, new Object[]{message});
+                android.content.DialogInterface.OnClickListener ok = (dialog, which) -> {
+                    dialog.dismiss();
+                    action.run();
+                };
+                android.content.DialogInterface.OnClickListener cancel =
+                        (dialog, which) -> dialog.dismiss();
+                invokeDialogBuilder(builder, "setPositiveButton",
+                        new Class[]{
+                                CharSequence.class,
+                                android.content.DialogInterface.OnClickListener.class
+                        },
+                        new Object[]{positive, ok});
+                invokeDialogBuilder(builder, "setNegativeButton",
+                        new Class[]{
+                                CharSequence.class,
+                                android.content.DialogInterface.OnClickListener.class
+                        },
+                        new Object[]{negative, cancel});
+                invokeDialogBuilder(builder, "setCancelable",
+                        new Class[]{boolean.class}, new Object[]{true});
+                Method show = builderCls.getMethod("show");
+                show.invoke(builder);
+                MLog.event("le.melody.dialog", "builder", "appcompat+coui-style",
+                        "class", builderName);
+                return true;
+            }
+            return false;
+        } catch (Throwable t) {
+            MLog.w("LE Audio styled AppCompat dialog failed", t);
+            return false;
+        }
+    }
+
     private static Object newMelodyDialogBuilder(Activity activity, Class<?> builderCls) {
         try {
             try {
@@ -386,6 +452,30 @@ public final class CodecController {
             return null;
         }
         return null;
+    }
+
+    private static Object newHostStyledBuilder(Activity activity, Class<?> builderCls) {
+        String[] styles = {
+                "COUIAlertDialog_BottomWarning",
+                "COUIAlertDialog_Bottom",
+                "COUIAlertDialog_Center"
+        };
+        for (String name : styles) {
+            int style = activity.getResources().getIdentifier(
+                    name, "style", activity.getPackageName());
+            if (style == 0) continue;
+            try {
+                return builderCls.getConstructor(Context.class, int.class)
+                        .newInstance(activity, style);
+            } catch (NoSuchMethodException ignored) {
+            } catch (Throwable ignored) {
+            }
+        }
+        try {
+            return builderCls.getConstructor(Context.class).newInstance(activity);
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     private static void invokeDialogBuilder(
