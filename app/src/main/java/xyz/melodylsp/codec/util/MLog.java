@@ -1,9 +1,11 @@
 package xyz.melodylsp.codec.util;
 
+import android.content.Context;
 import android.util.Log;
 
 import io.github.libxposed.api.XposedInterface;
 import xyz.melodylsp.codec.BuildConfig;
+import xyz.melodylsp.codec.diag.DiagnosticEvents;
 
 /**
  * Module-wide logging facade. Logs go to standard {@link Log} as well as the libxposed
@@ -16,12 +18,23 @@ public final class MLog {
 
     private static volatile XposedInterface xposed;
     private static volatile String hostVersion = "?";
+    private static volatile Context diagnosticContext;
+    private static volatile String diagnosticScope = "unknown";
 
     private MLog() {
     }
 
     public static void attach(XposedInterface iface) {
         xposed = iface;
+    }
+
+    public static void setDiagnosticContext(Context context, String scope) {
+        if (context != null) {
+            diagnosticContext = context.getApplicationContext();
+        }
+        if (scope != null && !scope.isEmpty()) {
+            diagnosticScope = scope;
+        }
     }
 
     /** Called by {@link xyz.melodylsp.codec.host.HostHookInstaller} once host package info is known. */
@@ -84,6 +97,8 @@ public final class MLog {
                 // Logging never crashes the app.
             }
         }
+        DiagnosticEvents.send(diagnosticContext, diagnosticScope, priority,
+                t == null ? prefixed : prefixed + '\n' + Log.getStackTraceString(t));
     }
 
     private static String prefix() {

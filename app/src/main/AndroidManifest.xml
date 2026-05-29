@@ -6,14 +6,19 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
 
     <application
         android:allowBackup="false"
         android:label="@string/app_label"
         android:description="@string/app_description"
-        android:icon="@android:drawable/ic_dialog_info"
-        android:theme="@android:style/Theme.DeviceDefault.Light.DialogWhenLarge"
-        tools:ignore="MissingApplicationIcon">
+        android:icon="@mipmap/ic_launcher"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
         <!--
           libxposed API 101+ reads scope from META-INF/xposed/scope.list and module
@@ -30,6 +35,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <receiver
+            android:name=".diag.DiagnosticEventReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="xyz.melodylsp.codec.action.DIAGNOSTIC_EVENT" />
+            </intent-filter>
+        </receiver>
 
     </application>
 </manifest>

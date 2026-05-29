@@ -12,6 +12,9 @@ import android.os.Handler;
 import android.os.Looper;
 
 import java.lang.reflect.Method;
+import java.util.Enumeration;
+
+import dalvik.system.DexFile;
 
 import xyz.melodylsp.codec.MelodyCodecLspEntry;
 import xyz.melodylsp.codec.util.MLog;
@@ -50,15 +53,20 @@ public final class WirelessSettingsHookInstaller {
     private final MelodyCodecLspEntry module;
     private final ClassLoader classLoader;
     private final String processName;
+    private final String sourceDir;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private volatile boolean receiverRegistered;
     private volatile Context appContext;
 
     public WirelessSettingsHookInstaller(
-            MelodyCodecLspEntry module, ClassLoader classLoader, String processName) {
+            MelodyCodecLspEntry module,
+            ClassLoader classLoader,
+            String processName,
+            String sourceDir) {
         this.module = module;
         this.classLoader = classLoader;
         this.processName = processName;
+        this.sourceDir = sourceDir;
     }
 
     public void install() {
@@ -90,6 +98,8 @@ public final class WirelessSettingsHookInstaller {
 
     private synchronized void ensureReceiver(Context context) {
         if (receiverRegistered || context == null) return;
+        MLog.setDiagnosticContext(context, "wirelesssettings");
+        MLog.event("scope.wirelesssettings.context.ready");
         this.appContext = context;
         BroadcastReceiver receiver = new BroadcastReceiver() {
             @Override
@@ -226,7 +236,8 @@ public final class WirelessSettingsHookInstaller {
      */
     private Object resolveLeAudioProfile(Context ctx) {
         try {
-            Class<?> mgrCls = Class.forName(CLASS_LOCAL_BT_MANAGER, false, classLoader);
+            Class<?> mgrCls = resolveLocalBluetoothManagerClass();
+            if (mgrCls == null) return null;
             Method getInstance = null;
             for (Method m : mgrCls.getMethods()) {
                 if (!"getInstance".equals(m.getName())) continue;
@@ -246,6 +257,61 @@ public final class WirelessSettingsHookInstaller {
             MLog.w("resolveLeAudioProfile failed", t);
             return null;
         }
+    }
+
+    private Class<?> resolveLocalBluetoothManagerClass() {
+        try {
+            return Class.forName(CLASS_LOCAL_BT_MANAGER, false, classLoader);
+        } catch (Throwable ignored) {
+        }
+        DexFile dex = null;
+        try {
+            if (sourceDir == null || sourceDir.isEmpty()) return null;
+            dex = new DexFile(sourceDir);
+            Enumeration<String> entries = dex.entries();
+            while (entries.hasMoreElements()) {
+                String name = entries.nextElement();
+                if (!name.startsWith("com.android.settingslib.bluetooth.")) continue;
+                if (!name.contains("BluetoothManager")
+                        && !name.contains("LocalBluetooth")) continue;
+                try {
+                    Class<?> cls = Class.forName(name, false, classLoader);
+                    if (looksLikeLocalBluetoothManager(cls)) {
+                        MLog.event("le.ws.local_manager.resolved",
+                                "mode", "scan", "class", name);
+                        return cls;
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        } catch (Throwable t) {
+            MLog.w("resolveLocalBluetoothManager dex scan failed", t);
+        } finally {
+            if (dex != null) {
+                try {
+                    dex.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        return null;
+    }
+
+    private static boolean looksLikeLocalBluetoothManager(Class<?> cls) {
+        if (cls == null) return false;
+        boolean hasGetInstance = false;
+        boolean hasProfileManager = false;
+        for (Method m : cls.getMethods()) {
+            if ("getInstance".equals(m.getName())) {
+                Class<?>[] p = m.getParameterTypes();
+                if (p.length >= 1 && p[0] == Context.class) {
+                    hasGetInstance = true;
+                }
+            } else if ("getProfileManager".equals(m.getName()) && m.getParameterCount() == 0) {
+                hasProfileManager = true;
+            }
+        }
+        return hasGetInstance && hasProfileManager;
     }
 
     private static BluetoothDevice resolveDevice(String mac) {

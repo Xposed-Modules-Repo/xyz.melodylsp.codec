@@ -69,6 +69,7 @@ public final class CodecController {
     private static final int SAMPLE_RATE_96000_BIT = 0x8;
     private static final int SAMPLE_RATE_192000_BIT = 0x20;
     private static final int SAMPLE_RATE_48000_HZ = 48_000;
+    private static final long CLASSIC_RESTORE_WINDOW_MS = 30_000L;
 
     private final Context context;
     private final BluetoothCodecReflect reflect;
@@ -76,26 +77,69 @@ public final class CodecController {
     private final PreferenceStore prefs;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ConnectionStateReplayer replayer;
+    private final SurfaceRescanRequester surfaceRescanRequester;
     private final Map<Object, Subscription> subscriptions = new HashMap<>();
     private final AtomicReference<CodecSnapshot> lastSnapshot = new AtomicReference<>();
     private final xyz.melodylsp.codec.leaudio.LeAudioManager leAudioManager;
     private final Set<String> classicRestorePending = new LinkedHashSet<>();
+    private final Map<String, Long> classicRestoreDeadlines = new HashMap<>();
+
+    public interface SurfaceRescanRequester {
+        void request(String reason);
+    }
 
     public CodecController(
             Context context,
             BluetoothCodecReflect reflect,
             CodecBridgeClient bridge,
-            PreferenceStore prefs) {
+            PreferenceStore prefs,
+            SurfaceRescanRequester surfaceRescanRequester) {
         this.context = context.getApplicationContext();
         this.reflect = reflect;
         this.bridge = bridge;
         this.prefs = prefs;
+        this.surfaceRescanRequester = surfaceRescanRequester;
         this.replayer = new ConnectionStateReplayer(this.context, bridge, prefs);
         this.replayer.start();
         this.bridge.addSnapshotListener(this::onPushedSnapshot);
         this.leAudioManager = new xyz.melodylsp.codec.leaudio.LeAudioManager(
                 this.context, this::onLeAudioStateChanged);
         registerActivityCleanup();
+    }
+
+    private void markClassicRestorePending(String mac) {
+        if (mac == null) return;
+        classicRestorePending.add(mac);
+        classicRestoreDeadlines.put(mac, System.currentTimeMillis() + CLASSIC_RESTORE_WINDOW_MS);
+    }
+
+    private void clearClassicRestorePending(String mac) {
+        if (mac == null) return;
+        classicRestorePending.remove(mac);
+        classicRestoreDeadlines.remove(mac);
+    }
+
+    private boolean isClassicRestorePending(String mac) {
+        if (mac == null || !classicRestorePending.contains(mac)) return false;
+        Long deadline = classicRestoreDeadlines.get(mac);
+        if (deadline != null && deadline < System.currentTimeMillis()) {
+            clearClassicRestorePending(mac);
+            return false;
+        }
+        return true;
+    }
+
+    private void requestSurfaceRescan(String reason) {
+        if (surfaceRescanRequester == null) return;
+        try {
+            surfaceRescanRequester.request(reason);
+        } catch (Throwable t) {
+            MLog.w("surface rescan request failed", t);
+        }
+    }
+
+    private void requestSurfaceRescanDelayed(String reason, long delayMs) {
+        mainHandler.postDelayed(() -> requestSurfaceRescan(reason), delayMs);
     }
 
     /**
@@ -110,7 +154,7 @@ public final class CodecController {
             if (sub.mac == null || !sub.mac.equals(mac)) continue;
             applyLeAudioToSwitch(sub);
             if (leOn) {
-                if (classicRestorePending.contains(mac)) {
+                if (isClassicRestorePending(mac)) {
                     // Disable is in flight and stale LE replies may still report enabled=true.
                     // Keep the classic rows visible while the A2DP profile comes back.
                     restoreClassicAudioRows(sub);
@@ -128,11 +172,19 @@ public final class CodecController {
                     renderUnknown(sub);
                 }
             } else {
-                classicRestorePending.remove(mac);
                 // LE Audio turned off: A2DP is coming back, so re-read the real codec status
-                // instead of trusting the now-stale snapshot.
+                // instead of trusting the now-stale snapshot. Keep the pending flag until a
+                // real A2DP snapshot arrives; Melody may briefly rebuild its PreferenceScreen
+                // while the LE profile disconnects.
+                boolean alreadyPending = isClassicRestorePending(mac);
+                markClassicRestorePending(mac);
                 restoreClassicAudioRows(sub);
                 scheduleClassicAudioRefresh(sub);
+                if (!alreadyPending) {
+                    requestSurfaceRescanDelayed("le.disabled", 300L);
+                    requestSurfaceRescanDelayed("le.disabled", 1600L);
+                    requestSurfaceRescanDelayed("le.disabled", 4200L);
+                }
             }
         }
     }
@@ -325,17 +377,25 @@ public final class CodecController {
 
     private void requestLeAudioToggle(Subscription sub, boolean enable) {
         if (!enable) {
-            classicRestorePending.add(sub.mac);
+            markClassicRestorePending(sub.mac);
             restoreClassicAudioRowsForMac(sub.mac);
+            requestSurfaceRescan("le.disable.request");
         } else {
-            classicRestorePending.remove(sub.mac);
+            clearClassicRestorePending(sub.mac);
         }
         leAudioManager.requestToggle(sub.mac, enable);
         if (!enable) {
             scheduleClassicAudioRefreshForMac(sub.mac);
+            requestSurfaceRescanDelayed("le.disable.sent", 1200L);
+            requestSurfaceRescanDelayed("le.disable.sent", 3500L);
+            requestSurfaceRescanDelayed("le.disable.sent", 7000L);
             mainHandler.postDelayed(() -> {
-                if (classicRestorePending.remove(sub.mac) && leAudioManager.isEnabled(sub.mac)) {
+                if (!isClassicRestorePending(sub.mac)) return;
+                if (leAudioManager.isEnabled(sub.mac)) {
                     onLeAudioStateChanged(sub.mac);
+                } else {
+                    scheduleClassicAudioRefreshForMac(sub.mac);
+                    requestSurfaceRescan("le.disable.waiting_classic");
                 }
             }, 12_000L);
         }
@@ -673,7 +733,7 @@ public final class CodecController {
 
     private void restoreClassicAudioRowsForMac(String mac) {
         if (mac == null) return;
-        classicRestorePending.add(mac);
+        markClassicRestorePending(mac);
         for (Subscription sub : subscriptions.values()) {
             if (mac.equals(sub.mac)) {
                 restoreClassicAudioRows(sub);
@@ -1297,6 +1357,10 @@ public final class CodecController {
     }
 
     private void renderUnknown(Subscription sub) {
+        if (isClassicRestorePending(sub.mac)) {
+            restoreClassicAudioRows(sub);
+            return;
+        }
         // When LE Audio is enabled the A2DP codec status is unavailable (the device is on the
         // LE transport), but that is NOT a disconnect — show LC3 and keep the switch usable.
         if (shouldRenderLeAudioActive(sub)) {
@@ -1326,7 +1390,7 @@ public final class CodecController {
             renderLeAudioActive(sub);
             return;
         }
-        classicRestorePending.remove(sub.mac);
+        clearClassicRestorePending(sub.mac);
         if (Boolean.FALSE.equals(sub.connected)) {
             renderUnknown(sub);
             return;
@@ -1355,7 +1419,7 @@ public final class CodecController {
     }
 
     private boolean shouldRenderLeAudioActive(Subscription sub) {
-        return leAudioManager.isEnabled(sub.mac) && !classicRestorePending.contains(sub.mac);
+        return leAudioManager.isEnabled(sub.mac) && !isClassicRestorePending(sub.mac);
     }
 
     private void renderLeAudioActive(Subscription sub) {
@@ -1561,7 +1625,7 @@ public final class CodecController {
                         if (state != -1 && state != BluetoothProfile.STATE_CONNECTED) {
                             mainHandler.post(() -> {
                                 if (leAudioManager.isEnabled(mac)
-                                        && !classicRestorePending.contains(mac)) {
+                                        && !isClassicRestorePending(mac)) {
                                     connected = Boolean.TRUE;
                                     renderLeAudioActive(Subscription.this);
                                     return;
@@ -1582,7 +1646,7 @@ public final class CodecController {
                         }
                     } else if (ACTION_CODEC_CONFIG_CHANGED.equals(action)) {
                         if (leAudioManager.isEnabled(mac)
-                                && !classicRestorePending.contains(mac)) {
+                                && !isClassicRestorePending(mac)) {
                             renderLeAudioActive(Subscription.this);
                             return;
                         }

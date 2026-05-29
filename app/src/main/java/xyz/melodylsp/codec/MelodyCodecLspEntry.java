@@ -77,7 +77,8 @@ public final class MelodyCodecLspEntry extends XposedModule {
             return;
         }
         MLog.event("scope.system.start", "process", param.getApplicationInfo().processName);
-        new SystemHookInstaller(this, param.getDefaultClassLoader()).install();
+        new SystemHookInstaller(this, param.getDefaultClassLoader(),
+                param.getApplicationInfo().sourceDir).install();
     }
 
     private void installWirelessSettingsScope(PackageLoadedParam param) {
@@ -88,7 +89,8 @@ public final class MelodyCodecLspEntry extends XposedModule {
         }
         String processName = param.getApplicationInfo().processName;
         MLog.event("scope.wirelesssettings.start", "process", processName);
-        new WirelessSettingsHookInstaller(this, param.getDefaultClassLoader(), processName)
+        new WirelessSettingsHookInstaller(this, param.getDefaultClassLoader(), processName,
+                param.getApplicationInfo().sourceDir)
                 .install();
     }
 

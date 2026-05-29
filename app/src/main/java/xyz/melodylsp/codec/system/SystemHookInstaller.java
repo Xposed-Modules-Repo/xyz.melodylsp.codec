@@ -1,11 +1,17 @@
 package xyz.melodylsp.codec.system;
 
 import android.app.Application;
+import android.bluetooth.BluetoothDevice;
 import android.content.Context;
 import android.os.Binder;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.Enumeration;
+import java.util.List;
+
+import dalvik.system.DexFile;
 
 import xyz.melodylsp.codec.MelodyCodecLspEntry;
 import xyz.melodylsp.codec.leaudio.BluetoothLeAudioBridge;
@@ -30,27 +36,93 @@ public final class SystemHookInstaller {
 
     private final MelodyCodecLspEntry module;
     private final ClassLoader classLoader;
+    private final String sourceDir;
     private CodecBridgeService bridgeService;
     private BluetoothLeAudioBridge leAudioBridge;
 
-    public SystemHookInstaller(MelodyCodecLspEntry module, ClassLoader classLoader) {
+    public SystemHookInstaller(
+            MelodyCodecLspEntry module, ClassLoader classLoader, String sourceDir) {
         this.module = module;
         this.classLoader = classLoader;
+        this.sourceDir = sourceDir;
     }
 
     public void install() {
-        Class<?> a2dpCls;
-        try {
-            a2dpCls = Class.forName(CLASS_A2DP_SERVICE, false, classLoader);
-        } catch (Throwable t) {
+        hookApplicationOnCreate();
+        Class<?> a2dpCls = resolveA2dpServiceClass();
+        if (a2dpCls == null) {
             MLog.w("A2dpService not found in com.android.bluetooth (scope misconfigured?)");
             return;
         }
         hookCdmAssociationForMelody();
-        hookApplicationOnCreate();
         hookConstructors(a2dpCls);
         hookLifecycle(a2dpCls);
         hookCodecConfigUpdated(a2dpCls);
+    }
+
+    private Class<?> resolveA2dpServiceClass() {
+        try {
+            Class<?> cls = Class.forName(CLASS_A2DP_SERVICE, false, classLoader);
+            MLog.event("bt.a2dp.resolved", "mode", "fqn", "class", cls.getName());
+            return cls;
+        } catch (Throwable ignored) {
+        }
+        for (Class<?> cls : scanBluetoothClasses()) {
+            if (looksLikeA2dpService(cls)) {
+                MLog.event("bt.a2dp.resolved", "mode", "scan", "class", cls.getName());
+                return cls;
+            }
+        }
+        return null;
+    }
+
+    private List<Class<?>> scanBluetoothClasses() {
+        List<Class<?>> out = new ArrayList<>();
+        DexFile dex = null;
+        try {
+            if (sourceDir == null || sourceDir.isEmpty()) return out;
+            dex = new DexFile(sourceDir);
+            Enumeration<String> entries = dex.entries();
+            while (entries.hasMoreElements()) {
+                String name = entries.nextElement();
+                if (!name.startsWith("com.android.bluetooth.")) continue;
+                if (!name.contains("a2dp") && !name.contains("A2dp")
+                        && !name.endsWith(".Utils")) continue;
+                try {
+                    out.add(Class.forName(name, false, classLoader));
+                } catch (Throwable ignored) {
+                }
+            }
+        } catch (Throwable t) {
+            MLog.w("Bluetooth dex scan failed", t);
+        } finally {
+            if (dex != null) {
+                try {
+                    dex.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        return out;
+    }
+
+    private static boolean looksLikeA2dpService(Class<?> cls) {
+        if (cls == null) return false;
+        return findMethod(cls, "getCodecStatus", BluetoothDevice.class) != null
+                && hasSetCodecConfigPreference(cls);
+    }
+
+    private static boolean hasSetCodecConfigPreference(Class<?> cls) {
+        for (Method m : cls.getMethods()) {
+            if (!"setCodecConfigPreference".equals(m.getName())) continue;
+            Class<?>[] p = m.getParameterTypes();
+            if (p.length == 2
+                    && p[0] == BluetoothDevice.class
+                    && "android.bluetooth.BluetoothCodecConfig".equals(p[1].getName())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void hookApplicationOnCreate() {
@@ -60,6 +132,8 @@ public final class SystemHookInstaller {
                 Object result = chain.proceed();
                 Object app = chain.getThisObject();
                 if (app instanceof Context) {
+                    MLog.setDiagnosticContext((Context) app, "bluetooth");
+                    MLog.event("scope.system.context.ready");
                     ensureLeAudioBridge((Context) app);
                 }
                 return result;
@@ -70,27 +144,49 @@ public final class SystemHookInstaller {
     }
 
     private void hookCdmAssociationForMelody() {
-        Class<?> utilsCls;
-        try {
-            utilsCls = Class.forName(CLASS_BT_UTILS, false, classLoader);
-        } catch (Throwable t) {
+        List<Class<?>> utilsClasses = resolveCdmUtilityClasses();
+        if (utilsClasses.isEmpty()) {
             MLog.w("Bluetooth Utils class not found; CDM bypass unavailable");
             return;
         }
         int hooked = 0;
-        for (Method m : utilsCls.getDeclaredMethods()) {
-            if (!isCdmEnforcementMethod(m.getName())) continue;
-            module.hook(m).intercept(chain -> {
-                Object[] args = chain.getArgs().toArray();
-                if (isMelodyA2dpCodecCall(args)) {
-                    MLog.event("cdm.bypass", "method", m.getName());
-                    return bypassReturnValue(m.getReturnType());
-                }
-                return chain.proceed();
-            });
-            hooked++;
+        for (Class<?> utilsCls : utilsClasses) {
+            for (Method m : utilsCls.getDeclaredMethods()) {
+                if (!isCdmEnforcementMethod(m.getName())) continue;
+                module.hook(m).intercept(chain -> {
+                    Object[] args = chain.getArgs().toArray();
+                    if (isMelodyA2dpCodecCall(args)) {
+                        MLog.event("cdm.bypass",
+                                "class", utilsCls.getName(), "method", m.getName());
+                        return bypassReturnValue(m.getReturnType());
+                    }
+                    return chain.proceed();
+                });
+                hooked++;
+            }
         }
         MLog.event("cdm.hooks", "count", hooked);
+    }
+
+    private List<Class<?>> resolveCdmUtilityClasses() {
+        List<Class<?>> out = new ArrayList<>();
+        try {
+            out.add(Class.forName(CLASS_BT_UTILS, false, classLoader));
+        } catch (Throwable ignored) {
+        }
+        for (Class<?> cls : scanBluetoothClasses()) {
+            boolean hasCdm = false;
+            for (Method m : cls.getDeclaredMethods()) {
+                if (isCdmEnforcementMethod(m.getName())) {
+                    hasCdm = true;
+                    break;
+                }
+            }
+            if (hasCdm && !out.contains(cls)) {
+                out.add(cls);
+            }
+        }
+        return out;
     }
 
     /**
@@ -179,8 +275,9 @@ public final class SystemHookInstaller {
     }
 
     private void hookCodecConfigUpdated(Class<?> a2dpCls) {
+        int hooked = 0;
         for (Method m : a2dpCls.getDeclaredMethods()) {
-            if (!"codecConfigUpdated".equals(m.getName())) continue;
+            if (!isCodecConfigUpdatedMethod(m)) continue;
             module.hook(m).intercept(chain -> {
                 Object result = chain.proceed();
                 CodecBridgeService bridge = bridgeService;
@@ -193,7 +290,33 @@ public final class SystemHookInstaller {
                 }
                 return result;
             });
+            hooked++;
         }
+        MLog.event("codec.updated.hooks", "count", hooked);
+    }
+
+    private static boolean isCodecConfigUpdatedMethod(Method m) {
+        if (m == null) return false;
+        if ("codecConfigUpdated".equals(m.getName())) return true;
+        boolean hasDevice = false;
+        boolean hasStatus = false;
+        for (Class<?> p : m.getParameterTypes()) {
+            if (p == BluetoothDevice.class) hasDevice = true;
+            if ("android.bluetooth.BluetoothCodecStatus".equals(p.getName())) hasStatus = true;
+        }
+        return hasDevice && hasStatus;
+    }
+
+    private static Method findMethod(Class<?> startCls, String name, Class<?>... params) {
+        Class<?> cls = startCls;
+        while (cls != null && cls != Object.class) {
+            try {
+                return cls.getDeclaredMethod(name, params);
+            } catch (NoSuchMethodException ignored) {
+                cls = cls.getSuperclass();
+            }
+        }
+        return null;
     }
 
     private static boolean isMelodyA2dpCodecCall(Object[] args) {

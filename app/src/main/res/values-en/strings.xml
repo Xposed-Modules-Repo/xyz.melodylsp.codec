@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_label">Bluetooth Codec Panel (Melody)</string>
-    <string name="app_description">Injects 4 items (Active Codec / Quality / Sample rate / Remember choice) into the Wireless Headset app HighAudio page and OneSpace bottom sheet. All selectable values come from the live A2DP negotiation.</string>
+    <string name="app_label">Headset Audio Helper</string>
+    <string name="app_description">Adds codec, quality, sample-rate and LE Audio controls to the Wireless Headset app, with a built-in diagnostics panel for feedback.</string>
 
     <string name="codec_block_title">Bluetooth audio</string>
     <string name="codec_display_title">Active codec</string>
@@ -40,9 +40,9 @@
     <string name="freshness_label">Last sync: %1$s</string>
     <string name="quality_unknown_value">Unknown level (specific1=%1$s)</string>
 
-    <string name="master_switch_title">Bluetooth audio module</string>
-    <string name="master_switch_summary">When disabled, the next launch of the Wireless Headset app will not inject this block. The host panel is restored to its original state.</string>
-    <string name="master_switch_label">Inject Bluetooth audio block</string>
+    <string name="master_switch_title">Headset Audio Helper</string>
+    <string name="master_switch_summary">When disabled, the next launch of the Wireless Headset app will not inject audio controls. The host panel is restored to its original state.</string>
+    <string name="master_switch_label">Enable module</string>
     <string name="master_switch_status_on">Enabled</string>
     <string name="master_switch_status_off">Disabled</string>
 </resources>

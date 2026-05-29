@@ -9,8 +9,11 @@ import android.os.Handler;
 import android.os.Looper;
 
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Set;
+import java.util.WeakHashMap;
 
 import xyz.melodylsp.codec.MelodyCodecLspEntry;
 import xyz.melodylsp.codec.bt.BluetoothCodecReflect;
@@ -89,6 +92,9 @@ public final class HostHookInstaller {
     private final ClassLoader classLoader;
     private final Set<Object> attachedScreens =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    private final Set<Activity> knownActivities =
+            Collections.newSetFromMap(new WeakHashMap<>());
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private CodecController controller;
     private boolean activityScanRegistered;
 
@@ -125,6 +131,8 @@ public final class HostHookInstaller {
 
     private synchronized void bootstrapController(Application app) {
         if (controller != null) return;
+        MLog.setDiagnosticContext(app, "melody");
+        MLog.event("scope.host.context.ready");
 
         String hostVersion = "?";
         try {
@@ -138,7 +146,7 @@ public final class HostHookInstaller {
         BluetoothCodecReflect reflect = new BluetoothCodecReflect(app);
         SettingsGlobalFallback fallback = new SettingsGlobalFallback(app);
         CodecBridgeClient bridge = new CodecBridgeClient(app, reflect, fallback);
-        controller = new CodecController(app, reflect, bridge, prefs);
+        controller = new CodecController(app, reflect, bridge, prefs, this::requestSurfaceRescan);
         registerActivityScanCallbacks(app);
 
         MLog.event("controller.ready", "version", hostVersion);
@@ -166,17 +174,17 @@ public final class HostHookInstaller {
             implements Application.ActivityLifecycleCallbacks {
         @Override
         public void onActivityCreated(Activity activity, Bundle savedInstanceState) {
+            rememberActivity(activity);
         }
 
         @Override
         public void onActivityStarted(Activity activity) {
+            rememberActivity(activity);
         }
 
         @Override
         public void onActivityResumed(Activity activity) {
-            if (activity == null) return;
-            String name = activity.getClass().getName();
-            if (name == null || !name.startsWith("com.oplus.melody.")) return;
+            if (!rememberActivity(activity)) return;
             scheduleKnownFragmentScan(activity, /* attempt= */ 0, "activity.scan");
         }
 
@@ -194,7 +202,32 @@ public final class HostHookInstaller {
 
         @Override
         public void onActivityDestroyed(Activity activity) {
+            if (activity != null) {
+                knownActivities.remove(activity);
+            }
         }
+    }
+
+    private boolean rememberActivity(Activity activity) {
+        if (activity == null) return false;
+        String name = activity.getClass().getName();
+        if (name == null || !name.startsWith("com.oplus.melody.")) return false;
+        knownActivities.add(activity);
+        return true;
+    }
+
+    private void requestSurfaceRescan(String reason) {
+        mainHandler.post(() -> {
+            int scheduled = 0;
+            for (Activity activity : new ArrayList<>(knownActivities)) {
+                if (activity == null || activity.isFinishing()) continue;
+                String name = activity.getClass().getName();
+                if (name == null || !name.startsWith("com.oplus.melody.")) continue;
+                scheduleKnownFragmentScan(activity, /* attempt= */ 0, "surface.rescan");
+                scheduled++;
+            }
+            MLog.event("surface.rescan.requested", "reason", reason, "activities", scheduled);
+        });
     }
 
     /**
