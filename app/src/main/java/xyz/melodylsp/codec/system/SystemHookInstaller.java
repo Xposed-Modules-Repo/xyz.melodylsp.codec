@@ -1,5 +1,6 @@
 package xyz.melodylsp.codec.system;
 
+import android.app.Application;
 import android.content.Context;
 import android.os.Binder;
 
@@ -7,6 +8,7 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 
 import xyz.melodylsp.codec.MelodyCodecLspEntry;
+import xyz.melodylsp.codec.leaudio.BluetoothLeAudioBridge;
 import xyz.melodylsp.codec.util.MLog;
 
 /**
@@ -29,6 +31,7 @@ public final class SystemHookInstaller {
     private final MelodyCodecLspEntry module;
     private final ClassLoader classLoader;
     private CodecBridgeService bridgeService;
+    private BluetoothLeAudioBridge leAudioBridge;
 
     public SystemHookInstaller(MelodyCodecLspEntry module, ClassLoader classLoader) {
         this.module = module;
@@ -44,9 +47,26 @@ public final class SystemHookInstaller {
             return;
         }
         hookCdmAssociationForMelody();
+        hookApplicationOnCreate();
         hookConstructors(a2dpCls);
         hookLifecycle(a2dpCls);
         hookCodecConfigUpdated(a2dpCls);
+    }
+
+    private void hookApplicationOnCreate() {
+        try {
+            Method onCreate = Application.class.getMethod("onCreate");
+            module.hook(onCreate).intercept(chain -> {
+                Object result = chain.proceed();
+                Object app = chain.getThisObject();
+                if (app instanceof Context) {
+                    ensureLeAudioBridge((Context) app);
+                }
+                return result;
+            });
+        } catch (Throwable t) {
+            MLog.w("hook bluetooth Application.onCreate for LE Audio failed", t);
+        }
     }
 
     private void hookCdmAssociationForMelody() {
@@ -130,6 +150,9 @@ public final class SystemHookInstaller {
     }
 
     private synchronized void ensureBridgeRegistered(Object a2dpService) {
+        if (a2dpService instanceof Context) {
+            ensureLeAudioBridge((Context) a2dpService);
+        }
         if (bridgeService != null || a2dpService == null) return;
         try {
             bridgeService = new CodecBridgeService(a2dpService);
@@ -141,6 +164,17 @@ public final class SystemHookInstaller {
             // Settings.Global, so failure here is not fatal. Demote to WARN once per process.
             MLog.w("ensureBridgeRegistered failed (likely SELinux) — host-side fallback will be used");
             bridgeService = null;
+        }
+    }
+
+    private synchronized void ensureLeAudioBridge(Context context) {
+        if (leAudioBridge != null || context == null) return;
+        try {
+            leAudioBridge = new BluetoothLeAudioBridge(context);
+            leAudioBridge.register();
+        } catch (Throwable t) {
+            leAudioBridge = null;
+            MLog.w("ensureLeAudioBridge failed", t);
         }
     }
 

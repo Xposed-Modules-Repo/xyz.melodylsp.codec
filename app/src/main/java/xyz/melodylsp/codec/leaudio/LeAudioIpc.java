@@ -4,10 +4,11 @@ package xyz.melodylsp.codec.leaudio;
  * Shared constants for the LE Audio one-tap IPC channel (TODO B2 — Phase 2).
  *
  * <p>The same module APK is loaded into both {@code com.oplus.melody} (UI side) and
- * {@code com.oplus.wirelesssettings} (privileged toggle side), so both ends agree on these
+ * {@code com.android.bluetooth} / {@code com.oplus.wirelesssettings} (privileged toggle side),
+ * so both ends agree on these
  * literals at compile time. The melody side broadcasts {@link #ACTION_SET_LE_AUDIO} /
- * {@link #ACTION_QUERY_LE_AUDIO}; the wirelesssettings side performs the actual
- * {@code LeAudioProfile.setEnabled} via settingslib reflection and echoes
+ * {@link #ACTION_QUERY_LE_AUDIO}; the privileged side performs the actual
+ * LE Audio profile write and echoes
  * {@link #ACTION_LE_AUDIO_STATE} back.</p>
  *
  * <p>Broadcasts are always targeted with {@code Intent#setPackage} (so they never leave the
@@ -19,12 +20,13 @@ public final class LeAudioIpc {
 
     public static final String MELODY_PKG = "com.oplus.melody";
     public static final String WIRELESS_SETTINGS_PKG = "com.oplus.wirelesssettings";
+    public static final String BLUETOOTH_PKG = "com.android.bluetooth";
 
-    /** melody → wirelesssettings: request an enable/disable of LE Audio for a device. */
+    /** melody → privileged bridge: request an enable/disable of LE Audio for a device. */
     public static final String ACTION_SET_LE_AUDIO = "xyz.melodylsp.codec.action.SET_LE_AUDIO";
-    /** melody → wirelesssettings: request the current support + enabled state for a device. */
+    /** melody → privileged bridge: request the current support + enabled state for a device. */
     public static final String ACTION_QUERY_LE_AUDIO = "xyz.melodylsp.codec.action.QUERY_LE_AUDIO";
-    /** wirelesssettings → melody: authoritative support + enabled state for a device. */
+    /** privileged bridge → melody: authoritative support + enabled state for a device. */
     public static final String ACTION_LE_AUDIO_STATE = "xyz.melodylsp.codec.action.LE_AUDIO_STATE";
 
     /** String, the device MAC the request / response concerns. */

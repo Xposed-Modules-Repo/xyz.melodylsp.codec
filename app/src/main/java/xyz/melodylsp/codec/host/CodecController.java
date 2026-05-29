@@ -277,7 +277,13 @@ public final class CodecController {
                 : xyz.melodylsp.codec.leaudio.LeAudioStrings.CONFIRM_OFF;
         String negative = xyz.melodylsp.codec.leaudio.LeAudioStrings.CANCEL;
 
-        new android.app.AlertDialog.Builder(activity)
+        if (showMelodyAlertDialog(activity, title, message, positive, negative,
+                () -> leAudioManager.requestToggle(sub.mac, enable))) {
+            return;
+        }
+
+        AlertDialog dialog = new android.app.AlertDialog.Builder(
+                activity, android.R.style.Theme_Material_Light_Dialog_Alert)
                 .setTitle(title)
                 .setMessage(message)
                 .setPositiveButton(positive, (d, w) -> {
@@ -286,7 +292,141 @@ public final class CodecController {
                 })
                 .setNegativeButton(negative, (d, w) -> d.dismiss())
                 .setCancelable(true)
-                .show();
+                .create();
+        dialog.setOnShowListener(d -> tintFallbackDialog(dialog));
+        dialog.show();
+    }
+
+    private interface ConfirmAction {
+        void run();
+    }
+
+    private static boolean showMelodyAlertDialog(
+            Activity activity,
+            String title,
+            String message,
+            String positive,
+            String negative,
+            ConfirmAction action) {
+        String[] builders = {
+                "com.oplus.melody.common.widget.MelodyAlertDialogBuilder",
+                "o6.C1381b",
+                "o6.b",
+                "B2.e"
+        };
+        for (String name : builders) {
+            try {
+                Class<?> builderCls = Class.forName(name, false, activity.getClassLoader());
+                Object builder = newMelodyDialogBuilder(activity, builderCls);
+                if (builder == null) continue;
+                invokeDialogBuilder(builder, "setTitle",
+                        new Class[]{CharSequence.class}, new Object[]{title});
+                invokeDialogBuilder(builder, "setMessage",
+                        new Class[]{CharSequence.class}, new Object[]{message});
+                android.content.DialogInterface.OnClickListener ok = (dialog, which) -> {
+                    dialog.dismiss();
+                    action.run();
+                };
+                android.content.DialogInterface.OnClickListener cancel =
+                        (dialog, which) -> dialog.dismiss();
+                invokeDialogBuilder(builder, "setPositiveButton",
+                        new Class[]{
+                                CharSequence.class,
+                                android.content.DialogInterface.OnClickListener.class
+                        },
+                        new Object[]{positive, ok});
+                invokeDialogBuilder(builder, "setNegativeButton",
+                        new Class[]{
+                                CharSequence.class,
+                                android.content.DialogInterface.OnClickListener.class
+                        },
+                        new Object[]{negative, cancel});
+                invokeDialogBuilder(builder, "setCancelable",
+                        new Class[]{boolean.class}, new Object[]{true});
+                Method show = builderCls.getMethod("show");
+                show.invoke(builder);
+                MLog.event("le.melody.dialog", "builder", name);
+                return true;
+            } catch (Throwable t) {
+                MLog.w("LE Audio melody dialog builder failed: " + name, t);
+            }
+        }
+        return false;
+    }
+
+    private static Object newMelodyDialogBuilder(Activity activity, Class<?> builderCls) {
+        try {
+            try {
+                return builderCls.getConstructor(Context.class).newInstance(activity);
+            } catch (NoSuchMethodException ignored) {
+            } catch (Throwable ignored) {
+            }
+            String[] styles = {
+                    "COUIAlertDialog_BottomWarning",
+                    "COUIAlertDialog_Center",
+                    "COUIAlertDialog_Bottom"
+            };
+            for (String name : styles) {
+                int style = activity.getResources().getIdentifier(
+                        name, "style", activity.getPackageName());
+                if (style == 0) continue;
+                try {
+                    return builderCls.getConstructor(Context.class, int.class)
+                            .newInstance(activity, style);
+                } catch (NoSuchMethodException ignored) {
+                } catch (Throwable ignored) {
+                }
+            }
+        } catch (Throwable t) {
+            return null;
+        }
+        return null;
+    }
+
+    private static void invokeDialogBuilder(
+            Object builder, String name, Class<?>[] params, Object[] args) throws Exception {
+        Method method = findMethod(builder.getClass(), name, params);
+        if (method == null) {
+            throw new NoSuchMethodException(name);
+        }
+        method.setAccessible(true);
+        method.invoke(builder, args);
+    }
+
+    private static Method findMethod(Class<?> startCls, String name, Class<?>... params) {
+        Class<?> cls = startCls;
+        while (cls != null && cls != Object.class) {
+            try {
+                return cls.getDeclaredMethod(name, params);
+            } catch (NoSuchMethodException ignored) {
+                cls = cls.getSuperclass();
+            }
+        }
+        return null;
+    }
+
+    private static void tintFallbackDialog(AlertDialog dialog) {
+        try {
+            int blue = Color.rgb(0, 105, 255);
+            int text = Color.rgb(25, 25, 25);
+            View decor = dialog.getWindow() != null ? dialog.getWindow().getDecorView() : null;
+            tintDialogText(decor, text);
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(blue);
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(blue);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void tintDialogText(View view, int color) {
+        if (view == null) return;
+        if (view instanceof TextView) {
+            ((TextView) view).setTextColor(color);
+        }
+        if (!(view instanceof ViewGroup)) return;
+        ViewGroup group = (ViewGroup) view;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            tintDialogText(group.getChildAt(i), color);
+        }
     }
 
     /** Reflect the tracked LE Audio state onto the switch widget (visibility + checked + summary). */
@@ -958,6 +1098,7 @@ public final class CodecController {
         PrefRef.setDisabled(sub.prefs.qualityOption, disabled);
         PrefRef.setDisabled(sub.prefs.sampleRateOption, disabled);
         PrefRef.setDisabled(sub.prefs.rememberToggle, disabled);
+        PrefRef.setDisabled(sub.prefs.leAudioSwitch, disabled);
     }
 
     private void renderQuality(CodecSnapshot snapshot, Subscription sub) {

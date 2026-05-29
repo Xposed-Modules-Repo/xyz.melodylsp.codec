@@ -30,10 +30,10 @@ import xyz.melodylsp.codec.util.MLog;
  *   <li>probe support (melody's {@code le-device-info} prefs, then ASCS / PACS / BASS GATT
  *       UUIDs);</li>
  *   <li>read enabled state from {@code le-device-info} and listen for melody's
- *       {@code PUT_LEA_MODE_INFO} broadcast + the wirelesssettings bridge reply
+ *       {@code PUT_LEA_MODE_INFO} broadcast + the privileged bridge reply
  *       ({@link LeAudioIpc#ACTION_LE_AUDIO_STATE}) to hot-refresh;</li>
- *   <li>fire {@link LeAudioIpc#ACTION_SET_LE_AUDIO} so the wirelesssettings bridge shows the
- *       official COUI warning dialog and performs {@code LeAudioProfile.setEnabled}.</li>
+ *   <li>fire {@link LeAudioIpc#ACTION_SET_LE_AUDIO} after the Melody-side confirmation dialog,
+ *       so the privileged bridge can perform the LE Audio profile write.</li>
  * </ul>
  * On any change it invokes {@link Listener#onLeAudioStateChanged(String)} so the controller
  * can re-render every subscription bound to that MAC.</p>
@@ -54,6 +54,11 @@ public final class LeAudioManager {
 
     private static final String MELODY_PUT_LEA_MODE_INFO =
             "oplus.bluetooth.device.action.PUT_LEA_MODE_INFO";
+    private static final String ACTION_LE_AUDIO_CONNECTION_STATE_CHANGED =
+            "android.bluetooth.action.LE_AUDIO_CONNECTION_STATE_CHANGED";
+    private static final String ACTION_A2DP_CONNECTION_STATE_CHANGED =
+            "android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED";
+    private static final String EXTRA_CONNECTION_STATE = "android.bluetooth.profile.extra.STATE";
 
     private final Context appContext;
     private final Listener listener;
@@ -84,7 +89,7 @@ public final class LeAudioManager {
 
     /**
      * Begin tracking a MAC: read the local best-effort state immediately and ask the
-     * wirelesssettings bridge for the authoritative state. Safe to call repeatedly.
+     * bluetooth bridge for the authoritative state. Safe to call repeatedly.
      */
     public void ensureTracking(String mac) {
         if (mac == null) return;
@@ -97,14 +102,15 @@ public final class LeAudioManager {
     }
 
     /**
-     * Request a toggle. Fires the broadcast to the wirelesssettings bridge, which shows the
-     * official COUI warning dialog and only flips LE Audio on user confirmation. We do not
-     * mutate local state here — the authoritative state arrives via the reply broadcast.
+     * Request a toggle. The user confirmation already happened in melody's Activity; send the
+     * privileged work to the bluetooth process, which is not app-freeze throttled like
+     * wirelesssettings. We do not mutate local state here — the authoritative state arrives via
+     * the reply broadcast.
      */
     public void requestToggle(String mac, boolean enable) {
         if (mac == null) return;
         Intent intent = new Intent(LeAudioIpc.ACTION_SET_LE_AUDIO);
-        intent.setPackage(LeAudioIpc.WIRELESS_SETTINGS_PKG);
+        intent.setPackage(LeAudioIpc.BLUETOOTH_PKG);
         intent.putExtra(LeAudioIpc.EXTRA_TOKEN, LeAudioIpc.TOKEN);
         intent.putExtra(LeAudioIpc.EXTRA_MAC, mac);
         intent.putExtra(LeAudioIpc.EXTRA_ENABLE, enable);
@@ -128,7 +134,7 @@ public final class LeAudioManager {
 
     private void queryBridge(String mac) {
         Intent intent = new Intent(LeAudioIpc.ACTION_QUERY_LE_AUDIO);
-        intent.setPackage(LeAudioIpc.WIRELESS_SETTINGS_PKG);
+        intent.setPackage(LeAudioIpc.BLUETOOTH_PKG);
         intent.putExtra(LeAudioIpc.EXTRA_TOKEN, LeAudioIpc.TOKEN);
         intent.putExtra(LeAudioIpc.EXTRA_MAC, mac);
         try {
@@ -147,22 +153,18 @@ public final class LeAudioManager {
                 if (LeAudioIpc.ACTION_LE_AUDIO_STATE.equals(action)) {
                     handleBridgeState(intent);
                 } else if (MELODY_PUT_LEA_MODE_INFO.equals(action)) {
-                    // melody updated its own LE state; re-read every tracked MAC from prefs.
-                    mainHandler.postDelayed(() -> {
-                        for (String mac : enabledByMac.keySet()) {
-                            boolean en = readEnabledFromPrefs(mac, isEnabled(mac));
-                            if (en != isEnabled(mac)) {
-                                enabledByMac.put(mac, en);
-                                notifyChanged(mac);
-                            }
-                        }
-                    }, 300L);
+                    refreshTrackedFromPrefsAndBridge(300L);
+                } else if (ACTION_LE_AUDIO_CONNECTION_STATE_CHANGED.equals(action)
+                        || ACTION_A2DP_CONNECTION_STATE_CHANGED.equals(action)) {
+                    handleBluetoothProfileState(intent);
                 }
             }
         };
         IntentFilter filter = new IntentFilter();
         filter.addAction(LeAudioIpc.ACTION_LE_AUDIO_STATE);
         filter.addAction(MELODY_PUT_LEA_MODE_INFO);
+        filter.addAction(ACTION_LE_AUDIO_CONNECTION_STATE_CHANGED);
+        filter.addAction(ACTION_A2DP_CONNECTION_STATE_CHANGED);
         try {
             appContext.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
         } catch (Throwable t) {
@@ -180,6 +182,41 @@ public final class LeAudioManager {
         enabledByMac.put(mac, en);
         MLog.event("le.melody.state.recv", "supported", sup, "enabled", en);
         notifyChanged(mac);
+    }
+
+    private void refreshTrackedFromPrefsAndBridge(long delayMs) {
+        mainHandler.postDelayed(() -> {
+            for (String mac : enabledByMac.keySet()) {
+                boolean en = readEnabledFromPrefs(mac, isEnabled(mac));
+                if (en != isEnabled(mac)) {
+                    enabledByMac.put(mac, en);
+                    notifyChanged(mac);
+                }
+                queryBridge(mac);
+            }
+        }, delayMs);
+    }
+
+    @SuppressWarnings("deprecation")
+    private void handleBluetoothProfileState(Intent intent) {
+        BluetoothDevice device = null;
+        try {
+            device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+        } catch (Throwable ignored) {
+        }
+        String mac = device != null ? device.getAddress() : null;
+        if (mac == null || !enabledByMac.containsKey(mac)) {
+            refreshTrackedFromPrefsAndBridge(800L);
+            return;
+        }
+        int state = intent.getIntExtra(EXTRA_CONNECTION_STATE, -1);
+        String action = intent.getAction();
+        if (ACTION_LE_AUDIO_CONNECTION_STATE_CHANGED.equals(action)
+                && state == android.bluetooth.BluetoothProfile.STATE_CONNECTED) {
+            enabledByMac.put(mac, true);
+            notifyChanged(mac);
+        }
+        mainHandler.postDelayed(() -> queryBridge(mac), 1200L);
     }
 
     private void notifyChanged(String mac) {
