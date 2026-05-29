@@ -70,6 +70,8 @@ public final class CodecController {
     private static final int SAMPLE_RATE_192000_BIT = 0x20;
     private static final int SAMPLE_RATE_48000_HZ = 48_000;
     private static final long CLASSIC_RESTORE_WINDOW_MS = 30_000L;
+    private static final String STATE_RESTORING_CLASSIC =
+            "\u6b63\u5728\u6062\u590d\u7ecf\u5178\u84dd\u7259\u97f3\u9891...";
 
     private final Context context;
     private final BluetoothCodecReflect reflect;
@@ -177,10 +179,17 @@ public final class CodecController {
                 // real A2DP snapshot arrives; Melody may briefly rebuild its PreferenceScreen
                 // while the LE profile disconnects.
                 boolean alreadyPending = isClassicRestorePending(mac);
-                markClassicRestorePending(mac);
-                restoreClassicAudioRows(sub);
-                scheduleClassicAudioRefresh(sub);
+                boolean shouldRestoreClassic = alreadyPending || sub.renderedLeAudioActive;
+                if (!shouldRestoreClassic) {
+                    refreshSnapshot(sub);
+                    continue;
+                }
                 if (!alreadyPending) {
+                    markClassicRestorePending(mac);
+                }
+                restoreClassicAudioRows(sub);
+                if (!alreadyPending) {
+                    scheduleClassicAudioRefresh(sub);
                     requestSurfaceRescanDelayed("le.disabled", 300L);
                     requestSurfaceRescanDelayed("le.disabled", 1600L);
                     requestSurfaceRescanDelayed("le.disabled", 4200L);
@@ -752,15 +761,16 @@ public final class CodecController {
 
     private void restoreClassicAudioRows(Subscription sub) {
         sub.connected = Boolean.TRUE;
+        sub.renderedLeAudioActive = false;
         if (sub.prefs.codecDisplay != null) {
             PrefRef.setTitle(sub.prefs.codecDisplay,
-                    Strings.CODEC_BLOCK_TITLE + " : " + Strings.STATE_CODEC_UNKNOWN);
+                    Strings.CODEC_BLOCK_TITLE + " : " + STATE_RESTORING_CLASSIC);
         }
         PrefRef.setVisible(sub.prefs.qualityOption, true);
         PrefRef.setVisible(sub.prefs.sampleRateOption, true);
-        PrefRef.setSummary(sub.prefs.qualityOption, Strings.STATE_CODEC_UNKNOWN);
-        PrefRef.setSummary(sub.prefs.sampleRateOption, Strings.STATE_CODEC_UNKNOWN);
-        setBlockDisabled(sub, false);
+        PrefRef.setSummary(sub.prefs.qualityOption, STATE_RESTORING_CLASSIC);
+        PrefRef.setSummary(sub.prefs.sampleRateOption, STATE_RESTORING_CLASSIC);
+        setBlockDisabled(sub, true);
         if (sub.prefs.leAudioSwitch != null) {
             PrefRef.setVisible(sub.prefs.leAudioSwitch, leAudioManager.isSupported(sub.mac));
             PrefRef.setChecked(sub.prefs.leAudioSwitch, false);
@@ -1361,18 +1371,21 @@ public final class CodecController {
             restoreClassicAudioRows(sub);
             return;
         }
+        sub.renderedLeAudioActive = false;
         // When LE Audio is enabled the A2DP codec status is unavailable (the device is on the
         // LE transport), but that is NOT a disconnect — show LC3 and keep the switch usable.
         if (shouldRenderLeAudioActive(sub)) {
             renderLeAudioActive(sub);
             return;
         }
+        boolean connected = Boolean.TRUE.equals(sub.connected);
+        String state = connected ? Strings.STATE_CODEC_UNKNOWN : Strings.STATE_NO_DEVICE;
         if (sub.prefs.codecDisplay != null) {
             PrefRef.setTitle(sub.prefs.codecDisplay,
-                    Strings.CODEC_BLOCK_TITLE + " : " + Strings.STATE_NO_DEVICE);
+                    Strings.CODEC_BLOCK_TITLE + " : " + state);
         }
-        PrefRef.setSummary(sub.prefs.qualityOption, Strings.STATE_NO_DEVICE);
-        PrefRef.setSummary(sub.prefs.sampleRateOption, Strings.STATE_NO_DEVICE);
+        PrefRef.setSummary(sub.prefs.qualityOption, state);
+        PrefRef.setSummary(sub.prefs.sampleRateOption, state);
         PrefRef.setVisible(sub.prefs.qualityOption, true);
         PrefRef.setVisible(sub.prefs.sampleRateOption, true);
         setBlockDisabled(sub, true);
@@ -1390,6 +1403,7 @@ public final class CodecController {
             renderLeAudioActive(sub);
             return;
         }
+        sub.renderedLeAudioActive = false;
         clearClassicRestorePending(sub.mac);
         if (Boolean.FALSE.equals(sub.connected)) {
             renderUnknown(sub);
@@ -1423,6 +1437,7 @@ public final class CodecController {
     }
 
     private void renderLeAudioActive(Subscription sub) {
+        sub.renderedLeAudioActive = true;
         if (sub.prefs.codecDisplay != null) {
             PrefRef.setTitle(sub.prefs.codecDisplay,
                     Strings.CODEC_BLOCK_TITLE + " : " + Strings.CODEC_LABEL_LC3);
@@ -1605,6 +1620,7 @@ public final class CodecController {
         final Object fragment;
         BroadcastReceiver receiver;
         Boolean connected;
+        boolean renderedLeAudioActive;
         java.lang.ref.WeakReference<Activity> hostActivity;
 
         Subscription(String mac, CodecPreferences prefs, Object fragment) {

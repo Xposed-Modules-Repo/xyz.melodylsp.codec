@@ -13,6 +13,12 @@
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
 
+    <queries>
+        <package android:name="com.oplus.melody" />
+        <package android:name="com.android.bluetooth" />
+        <package android:name="com.oplus.wirelesssettings" />
+    </queries>
+
     <application
         android:allowBackup="false"
         android:label="@string/app_label"

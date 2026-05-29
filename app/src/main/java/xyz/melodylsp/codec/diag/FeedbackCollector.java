@@ -124,8 +124,8 @@ public final class FeedbackCollector {
                 DiagnosticEvents.PREFS, Context.MODE_PRIVATE);
         StringBuilder sb = new StringBuilder();
         sb.append("Status\n");
-        appendStatus(sb, sp, "scope.host", "Melody scope");
-        appendStatus(sb, sp, "host.controller", "Melody controller");
+        appendStatus(sb, sp, "scope.host", "Wireless Headset scope");
+        appendStatus(sb, sp, "host.controller", "Host controller");
         appendStatus(sb, sp, "hook.host", "Host hooks");
         appendStatus(sb, sp, "inject.detail", "DetailMain injection");
         appendStatus(sb, sp, "inject.onespace", "OneSpace injection");

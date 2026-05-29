@@ -111,20 +111,31 @@ public final class DiagnosticEvents {
             mark(editor, "inject.onespace", "已注入", message, time);
         }
         if (message.contains("evt=scope.system.start")
-                || message.contains("evt=scope.system.context.ready")) {
+                || message.contains("evt=scope.system.context.ready")
+                || message.contains("evt=bt.a2dp.resolved")
+                || message.contains("evt=codec.updated.hooks")
+                || message.contains("evt=cdm.hooks")
+                || message.contains("evt=le.bt.")) {
             mark(editor, "scope.bluetooth", "已加载", message, time);
         }
-        if (message.contains("evt=system.bridge.registered")) {
+        if (message.contains("evt=system.bridge.registered")
+                || message.contains("evt=bt.a2dp.resolved")
+                || message.contains("evt=codec.updated.hooks")
+                || message.contains("evt=a2dp.setCodecConfigPreference")
+                || message.contains("evt=cdm.bypass")) {
             mark(editor, "bridge.codec", "已注册", message, time);
         }
-        if (message.contains("evt=le.bt.receiver.registered")) {
+        if (message.contains("evt=le.bt.receiver.registered")
+                || message.contains("evt=le.bt.")) {
             mark(editor, "bridge.le.bt", "已注册", message, time);
         }
         if (message.contains("evt=scope.wirelesssettings.start")
-                || message.contains("evt=scope.wirelesssettings.context.ready")) {
+                || message.contains("evt=scope.wirelesssettings.context.ready")
+                || message.contains("evt=le.ws.")) {
             mark(editor, "scope.wirelesssettings", "已加载", message, time);
         }
-        if (message.contains("evt=le.ws.receiver.registered")) {
+        if (message.contains("evt=le.ws.receiver.registered")
+                || message.contains("evt=le.ws.")) {
             mark(editor, "bridge.le.ws", "已注册", message, time);
         }
         if (priority >= Log.WARN) {

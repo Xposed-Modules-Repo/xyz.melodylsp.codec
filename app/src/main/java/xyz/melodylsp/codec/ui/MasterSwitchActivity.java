@@ -170,20 +170,20 @@ public final class MasterSwitchActivity extends Activity {
     private void refresh() {
         boolean enabled = modulePrefs.getBoolean(KEY_ENABLED, true);
         enabledStatus.setText(enabled
-                ? "已启用。重启 Melody 后会注入音质控制项。"
-                : "已禁用。重启 Melody 后宿主页面恢复原状。");
+                ? "已启用。重启“无线耳机”后会注入音质控制项。"
+                : "已禁用。重启“无线耳机”后宿主页面恢复原状。");
 
         clearDynamicRows(packageList);
         addInfoRow(packageList, "模块版本",
                 BuildConfig.VERSION_NAME + " (" + BuildConfig.VERSION_CODE + ")");
         addInfoRow(packageList, "系统",
                 Build.MANUFACTURER + " " + Build.MODEL + " / Android " + Build.VERSION.RELEASE);
-        addInfoRow(packageList, "Melody", packageVersion("com.oplus.melody"));
-        addInfoRow(packageList, "Bluetooth", packageVersion("com.android.bluetooth"));
-        addInfoRow(packageList, "WirelessSettings", packageVersion("com.oplus.wirelesssettings"));
+        addInfoRow(packageList, "无线耳机", packageVersion("com.oplus.melody"));
+        addInfoRow(packageList, "蓝牙", packageVersion("com.android.bluetooth"));
+        addInfoRow(packageList, "无线设置", packageVersion("com.oplus.wirelesssettings"));
 
         clearDynamicRows(statusList);
-        addStatusRow("Melody 作用域", "scope.host");
+        addStatusRow("无线耳机作用域", "scope.host");
         addStatusRow("Host 控制器", "host.controller");
         addStatusRow("页面 Hook", "hook.host");
         addStatusRow("DetailMain 注入", "inject.detail");

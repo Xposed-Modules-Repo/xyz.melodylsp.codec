@@ -17,7 +17,7 @@ public final class Strings {
     public static final String REMEMBER_TOGGLE_SUMMARY =
             "关闭时每次重连按系统默认值；开启后下次连接会自动应用你上次的设置。";
 
-    public static final String STATE_NO_DEVICE = "未连接耳机";
+    public static final String STATE_NO_DEVICE = "未连接";
     public static final String STATE_CODEC_UNKNOWN = "暂时无法获取编解码器信息";
 
     public static final String BANNER_VIA_SETTINGS = "已写入开发者选项";
