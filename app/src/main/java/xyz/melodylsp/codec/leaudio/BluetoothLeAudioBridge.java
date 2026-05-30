@@ -103,8 +103,9 @@ public final class BluetoothLeAudioBridge {
         if (ok) {
             sendTransportSwitch(device, enable);
             if (!enable) {
-                reconnectA2dpLater(device, 1200L);
-                reconnectA2dpLater(device, 3200L);
+                reconnectA2dpLater(device, 1800L, 1);
+                reconnectA2dpLater(device, 3600L, 2);
+                reconnectA2dpLater(device, 6500L, 3);
             }
         }
         return ok;
@@ -218,31 +219,59 @@ public final class BluetoothLeAudioBridge {
         }
     }
 
-    private void reconnectA2dpLater(BluetoothDevice device, long delayMs) {
+    private void reconnectA2dpLater(BluetoothDevice device, long delayMs, int attempt) {
         new Thread(() -> {
             try {
                 Thread.sleep(delayMs);
             } catch (InterruptedException ignored) {
                 Thread.currentThread().interrupt();
             }
-            reconnectA2dp(device);
+            reconnectA2dp(device, attempt);
         }, "MelodyCodecLsp-a2dp-reconnect").start();
     }
 
-    private void reconnectA2dp(BluetoothDevice device) {
+    private void reconnectA2dp(BluetoothDevice device, int attempt) {
         Object proxy = acquireA2dpProxyBlocking();
         if (proxy == null || device == null) {
             MLog.w("le.bt.a2dp.reconnect skipped");
             return;
         }
         boolean policyOk = setConnectionPolicy(proxy, device, CONNECTION_POLICY_ALLOWED);
+        int stateBefore = getProfileConnectionState(proxy, device);
+        if (stateBefore == BluetoothProfile.STATE_CONNECTED) {
+            MLog.event("le.bt.a2dp.reconnect",
+                    "attempt", attempt,
+                    "policyOk", policyOk,
+                    "stateBefore", stateBefore,
+                    "action", "already_connected");
+            return;
+        }
+        if (stateBefore == BluetoothProfile.STATE_CONNECTING) {
+            MLog.event("le.bt.a2dp.reconnect",
+                    "attempt", attempt,
+                    "policyOk", policyOk,
+                    "stateBefore", stateBefore,
+                    "action", "already_connecting");
+            return;
+        }
+        if (stateBefore == BluetoothProfile.STATE_DISCONNECTING) {
+            MLog.event("le.bt.a2dp.reconnect",
+                    "attempt", attempt,
+                    "policyOk", policyOk,
+                    "stateBefore", stateBefore,
+                    "action", "disconnecting");
+            return;
+        }
         Boolean connectOk = invokeBoolean(proxy, "connect",
                 new Class[]{BluetoothDevice.class}, new Object[]{device});
-        int state = getProfileConnectionState(proxy, device);
+        int stateAfter = getProfileConnectionState(proxy, device);
         MLog.event("le.bt.a2dp.reconnect",
+                "attempt", attempt,
                 "policyOk", policyOk,
                 "connectOk", connectOk,
-                "state", state);
+                "stateBefore", stateBefore,
+                "stateAfter", stateAfter,
+                "action", "connect");
     }
 
     private void replyLater(String mac, boolean ok, long delayMs) {
