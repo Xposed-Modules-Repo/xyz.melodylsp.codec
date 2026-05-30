@@ -59,6 +59,15 @@ jobs:
         with:
           gradle-version: 8.10.2
 
+      - name: Verify LSP sync token
+        env:
+          LSP_REPO_TOKEN: ${{ secrets.LSP_REPO_TOKEN }}
+        run: |
+          if [ -z "$LSP_REPO_TOKEN" ]; then
+            echo "::error::Missing LSP_REPO_TOKEN. Create a token that can write to Xposed-Modules-Repo/xyz.melodylsp.codec and add it to this repository's Actions secrets."
+            exit 1
+          fi
+
       - name: Bump version
         id: version
         env:
@@ -189,10 +198,31 @@ jobs:
           git push origin "HEAD:${GITHUB_REF_NAME}"
           git push origin "${{ steps.version.outputs.tag }}"
 
+      - name: Sync source and tag to Xposed Modules Repo
+        env:
+          LSP_REPO_TOKEN: ${{ secrets.LSP_REPO_TOKEN }}
+        run: |
+          git remote add lsp "https://x-access-token:${LSP_REPO_TOKEN}@github.com/Xposed-Modules-Repo/xyz.melodylsp.codec.git"
+          git push lsp "HEAD:${GITHUB_REF_NAME}"
+          git push lsp "${{ steps.version.outputs.tag }}"
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
+          name: 欧加耳机音质助手 ${{ steps.version.outputs.tag }}
+          body_path: RELEASE_NOTES.md
+          files: app/build/outputs/apk/release/${{ steps.meta.outputs.apk_name }}
+          prerelease: ${{ inputs.prerelease }}
+          draft: ${{ inputs.draft }}
+
+      - name: Publish Xposed Modules Repo Release
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: Xposed-Modules-Repo/xyz.melodylsp.codec
+          token: ${{ secrets.LSP_REPO_TOKEN }}
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.ref_name }}
           name: 欧加耳机音质助手 ${{ steps.version.outputs.tag }}
           body_path: RELEASE_NOTES.md
           files: app/build/outputs/apk/release/${{ steps.meta.outputs.apk_name }}
