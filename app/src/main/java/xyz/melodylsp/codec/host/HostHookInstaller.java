@@ -2,18 +2,29 @@ package xyz.melodylsp.codec.host;
 
 import android.app.Activity;
 import android.app.Application;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothManager;
+import android.bluetooth.BluetoothProfile;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.WeakHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import xyz.melodylsp.codec.MelodyCodecLspEntry;
 import xyz.melodylsp.codec.bt.BluetoothCodecReflect;
@@ -87,6 +98,8 @@ public final class HostHookInstaller {
     private static final String KEY_NOISE_SWITCH_CATEGORY = "pref_noise_switch_category";
     private static final String KEY_MORE_SETTING = "pref_more_setting";
     private static final String KEY_FOOTER = "footer_preference";
+    private static final Pattern MAC_PATTERN =
+            Pattern.compile("(?i)(?:[0-9a-f]{2}:){5}[0-9a-f]{2}");
 
     private final MelodyCodecLspEntry module;
     private final ClassLoader classLoader;
@@ -1011,29 +1024,268 @@ public final class HostHookInstaller {
     }
 
     /**
-     * Resolves the MAC address that the OneSpace / HighAudio fragment is bound to.
+     * Resolves the MAC address that the current Preference surface is bound to.
      *
-     * <p>The host stores the MAC in the parent Activity's Intent under
-     * {@code device_mac_info} — a plain string literal that survives R8 minification. Field
-     * names are R8-hashed and change between builds, so we no longer try to read them.</p>
+     * <p>Normal Melody entry points still pass {@code device_mac_info}, but Settings ->
+     * WirelessSettings -> DetailMainActivity can start Melody without that extra. In that path
+     * the hook is installed correctly, yet injection used to be skipped because no device id was
+     * available. Keep the stable Intent key as the fast path, then fall back to scanning host
+     * objects and finally the active A2DP device.</p>
      */
     private static String resolveMacFromActivityIntent(Object fragment) {
+        Object activity = null;
         try {
             Method getActivity = fragment.getClass().getMethod("getActivity");
-            Object activity = getActivity.invoke(fragment);
-            if (activity == null) return null;
-            Method getIntent = activity.getClass().getMethod("getIntent");
-            Object intent = getIntent.invoke(activity);
-            if (intent == null) return null;
-            Method getStringExtra = intent.getClass().getMethod("getStringExtra", String.class);
-            Object value = getStringExtra.invoke(intent, "device_mac_info");
-            if (value == null) return null;
-            String mac = value.toString();
-            return mac.isEmpty() ? null : mac;
+            activity = getActivity.invoke(fragment);
         } catch (Throwable t) {
-            MLog.w("resolveMacFromActivityIntent failed", t);
-            return null;
+            MLog.w("resolveMac activity failed", t);
         }
+
+        Intent intent = null;
+        try {
+            if (activity != null) {
+                Method getIntent = activity.getClass().getMethod("getIntent");
+                Object value = getIntent.invoke(activity);
+                if (value instanceof Intent) intent = (Intent) value;
+            }
+        } catch (Throwable t) {
+            MLog.w("resolveMac intent failed", t);
+        }
+
+        String mac = macFromIntent(intent);
+        if (mac != null) {
+            MLog.event("mac.resolved", "source", "intent");
+            return mac;
+        }
+
+        mac = findMacInObject(fragment, 2, new IdentityHashMap<>());
+        if (mac != null) {
+            MLog.event("mac.resolved", "source", "fragment_fields");
+            return mac;
+        }
+
+        mac = findMacInObject(activity, 2, new IdentityHashMap<>());
+        if (mac != null) {
+            MLog.event("mac.resolved", "source", "activity_fields");
+            return mac;
+        }
+
+        Context context = activity instanceof Context ? (Context) activity : resolveContext(fragment);
+        mac = resolveMacFromA2dp(context);
+        if (mac != null) {
+            MLog.event("mac.resolved", "source", "active_a2dp");
+            return mac;
+        }
+
+        MLog.event("mac.unresolved",
+                "fragment", fragment == null ? "null" : fragment.getClass().getName(),
+                "activity", activity == null ? "null" : activity.getClass().getName());
+        return null;
+    }
+
+    @SuppressWarnings("deprecation")
+    private static String macFromIntent(Intent intent) {
+        if (intent == null) return null;
+        String mac = normalizeMacCandidate(intent.getStringExtra("device_mac_info"));
+        if (mac != null) return mac;
+        mac = normalizeMacCandidate(intent.getDataString());
+        if (mac != null) return mac;
+        try {
+            Object device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+            mac = normalizeMacCandidate(device);
+            if (mac != null) return mac;
+        } catch (Throwable ignored) {
+        }
+        return findMacInObject(intent.getExtras(), 2, new IdentityHashMap<>());
+    }
+
+    private static String findMacInObject(
+            Object value,
+            int depth,
+            IdentityHashMap<Object, Boolean> seen) {
+        String mac = normalizeMacCandidate(value);
+        if (mac != null) return mac;
+        if (value == null || depth < 0 || seen.containsKey(value)) return null;
+        if (isMacScanTerminal(value)) return null;
+        seen.put(value, Boolean.TRUE);
+
+        if (value instanceof Intent) {
+            return macFromIntent((Intent) value);
+        }
+        if (value instanceof Bundle) {
+            return findMacInBundle((Bundle) value, depth, seen);
+        }
+        if (value instanceof Map) {
+            return findMacInMap((Map<?, ?>) value, depth, seen);
+        }
+        if (value instanceof Iterable) {
+            return findMacInIterable((Iterable<?>) value, depth, seen);
+        }
+
+        Class<?> cls = value.getClass();
+        while (cls != null && cls != Object.class) {
+            if (shouldStopMacFieldScan(cls)) break;
+            for (Field field : cls.getDeclaredFields()) {
+                if (field.isSynthetic()
+                        || field.getType().isPrimitive()
+                        || java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
+                    continue;
+                }
+                try {
+                    field.setAccessible(true);
+                    mac = findMacInObject(field.get(value), depth - 1, seen);
+                    if (mac != null) return mac;
+                } catch (Throwable ignored) {
+                }
+            }
+            cls = cls.getSuperclass();
+        }
+        return null;
+    }
+
+    private static String findMacInBundle(
+            Bundle bundle,
+            int depth,
+            IdentityHashMap<Object, Boolean> seen) {
+        try {
+            for (String key : bundle.keySet()) {
+                String mac = normalizeMacCandidate(key);
+                if (mac != null) return mac;
+                try {
+                    mac = findMacInObject(bundle.get(key), depth - 1, seen);
+                    if (mac != null) return mac;
+                } catch (Throwable ignored) {
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static String findMacInMap(
+            Map<?, ?> map,
+            int depth,
+            IdentityHashMap<Object, Boolean> seen) {
+        int count = 0;
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+            if (count++ > 64) break;
+            String mac = findMacInObject(entry.getKey(), depth - 1, seen);
+            if (mac != null) return mac;
+            mac = findMacInObject(entry.getValue(), depth - 1, seen);
+            if (mac != null) return mac;
+        }
+        return null;
+    }
+
+    private static String findMacInIterable(
+            Iterable<?> values,
+            int depth,
+            IdentityHashMap<Object, Boolean> seen) {
+        int count = 0;
+        for (Object item : values) {
+            if (count++ > 64) break;
+            String mac = findMacInObject(item, depth - 1, seen);
+            if (mac != null) return mac;
+        }
+        return null;
+    }
+
+    private static boolean isMacScanTerminal(Object value) {
+        if ((value instanceof Context && !(value instanceof Activity))
+                || value instanceof Handler
+                || value instanceof ClassLoader
+                || value instanceof Class
+                || value.getClass().isArray()) {
+            return true;
+        }
+        String name = value.getClass().getName();
+        return name.startsWith("android.view.")
+                || name.startsWith("android.widget.")
+                || name.startsWith("android.graphics.")
+                || name.startsWith("android.text.")
+                || name.startsWith("android.content.res.")
+                || name.startsWith("java.lang.ref.");
+    }
+
+    private static boolean shouldStopMacFieldScan(Class<?> cls) {
+        String name = cls.getName();
+        return name.startsWith("android.")
+                || name.startsWith("androidx.")
+                || name.startsWith("java.")
+                || name.startsWith("kotlin.")
+                || name.startsWith("dalvik.")
+                || name.startsWith("libcore.")
+                || name.startsWith("sun.");
+    }
+
+    private static String normalizeMacCandidate(Object value) {
+        if (value == null) return null;
+        if (value instanceof BluetoothDevice) {
+            return normalizeMac(((BluetoothDevice) value).getAddress());
+        }
+        if (value instanceof CharSequence) {
+            Matcher matcher = MAC_PATTERN.matcher(value.toString());
+            return matcher.find() ? normalizeMac(matcher.group()) : null;
+        }
+        return null;
+    }
+
+    private static String normalizeMac(String mac) {
+        if (mac == null) return null;
+        String trimmed = mac.trim();
+        if (!MAC_PATTERN.matcher(trimmed).matches()) return null;
+        return trimmed.toUpperCase(Locale.ROOT);
+    }
+
+    @SuppressWarnings("deprecation")
+    private static String resolveMacFromA2dp(Context context) {
+        BluetoothAdapter adapter = null;
+        try {
+            if (context != null) {
+                Object service = context.getSystemService(Context.BLUETOOTH_SERVICE);
+                if (service instanceof BluetoothManager) {
+                    adapter = ((BluetoothManager) service).getAdapter();
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        if (adapter == null) {
+            try {
+                adapter = BluetoothAdapter.getDefaultAdapter();
+            } catch (Throwable ignored) {
+            }
+        }
+        if (adapter == null) return null;
+
+        try {
+            Method getActiveDevices = adapter.getClass().getMethod("getActiveDevices", int.class);
+            Object devices = getActiveDevices.invoke(adapter, BluetoothProfile.A2DP);
+            String mac = macFromDeviceCollection(devices);
+            if (mac != null) return mac;
+        } catch (Throwable ignored) {
+        }
+
+        try {
+            if (context != null) {
+                Object service = context.getSystemService(Context.BLUETOOTH_SERVICE);
+                if (service instanceof BluetoothManager) {
+                    List<BluetoothDevice> devices =
+                            ((BluetoothManager) service).getConnectedDevices(BluetoothProfile.A2DP);
+                    return macFromDeviceCollection(devices);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static String macFromDeviceCollection(Object devices) {
+        if (!(devices instanceof Iterable)) return null;
+        for (Object item : (Iterable<?>) devices) {
+            String mac = normalizeMacCandidate(item);
+            if (mac != null) return mac;
+        }
+        return null;
     }
 
     private Class<?> loadHostClass(String name) {
