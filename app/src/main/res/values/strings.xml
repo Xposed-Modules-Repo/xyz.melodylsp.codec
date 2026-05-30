@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_label">耳机音质助手</string>
-    <string name="app_description">给无线耳机 App 补上协议、音质、采样率和 LE Audio 快捷开关，顺手带一个诊断面板，出问题能快速打包反馈。</string>
+    <string name="app_label">欧加耳机音质助手</string>
+    <string name="app_description">给 OPPO / OnePlus / ColorOS 无线耳机 App 补上协议、音质、采样率和 LE Audio 快捷开关，顺手带一个诊断面板，出问题能快速打包反馈。</string>
 
     <string name="codec_block_title">蓝牙音质</string>
     <string name="codec_display_title">当前编解码器</string>
@@ -40,7 +40,7 @@
     <string name="freshness_label">上次同步：%1$s</string>
     <string name="quality_unknown_value">未知档位（specific1=%1$s）</string>
 
-    <string name="master_switch_title">耳机音质助手</string>
+    <string name="master_switch_title">欧加耳机音质助手</string>
     <string name="master_switch_summary">关闭后，下次启动“无线耳机” App 将不再注入音质控制项，宿主面板恢复原状。</string>
     <string name="master_switch_label">启用模块</string>
     <string name="master_switch_status_on">已启用</string>

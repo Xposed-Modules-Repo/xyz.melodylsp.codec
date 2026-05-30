@@ -1,0 +1,200 @@
+name: Release APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump type when version is empty
+        type: choice
+        required: true
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+      version:
+        description: Optional exact versionName, for example 0.2.0
+        required: false
+        type: string
+      release_notes:
+        description: Optional release notes shown before the generated commit list
+        required: false
+        type: string
+      prerelease:
+        description: Mark GitHub Release as prerelease
+        required: true
+        default: false
+        type: boolean
+      draft:
+        description: Create GitHub Release as draft
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Bump, build and publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.10.2
+
+      - name: Bump version
+        id: version
+        env:
+          VERSION_OVERRIDE: ${{ inputs.version }}
+          BUMP_TYPE: ${{ inputs.bump }}
+        run: |
+          python3 <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("app/build.gradle.kts")
+          text = path.read_text(encoding="utf-8")
+          name_match = re.search(r'versionName\s*=\s*"([^"]+)"', text)
+          code_match = re.search(r"versionCode\s*=\s*(\d+)", text)
+          if not name_match or not code_match:
+              raise SystemExit("versionName/versionCode not found in app/build.gradle.kts")
+
+          current_name = name_match.group(1)
+          current_code = int(code_match.group(1))
+          override = os.environ.get("VERSION_OVERRIDE", "").strip()
+          bump = os.environ.get("BUMP_TYPE", "patch").strip()
+
+          if override:
+              new_name = override[1:] if override.startswith("v") else override
+              if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", new_name):
+                  raise SystemExit(f"Invalid version override: {override}")
+          else:
+              base = re.split(r"[-+]", current_name, maxsplit=1)[0]
+              parts = base.split(".")
+              if len(parts) != 3 or not all(part.isdigit() for part in parts):
+                  raise SystemExit(f"Cannot auto-bump non-semver versionName: {current_name}")
+              major, minor, patch = map(int, parts)
+              if bump == "major":
+                  major += 1
+                  minor = 0
+                  patch = 0
+              elif bump == "minor":
+                  minor += 1
+                  patch = 0
+              elif bump == "patch":
+                  patch += 1
+              else:
+                  raise SystemExit(f"Unknown bump type: {bump}")
+              new_name = f"{major}.{minor}.{patch}"
+
+          new_code = current_code + 1
+          text = re.sub(r"versionCode\s*=\s*\d+", f"versionCode = {new_code}", text, count=1)
+          text = re.sub(r'versionName\s*=\s*"[^"]+"', f'versionName = "{new_name}"', text, count=1)
+          path.write_text(text, encoding="utf-8")
+
+          print(f"version={new_name}")
+          print(f"version_code={new_code}")
+          print(f"tag=v{new_name}")
+          PY
+
+      - name: Generate release notes
+        env:
+          TAG_NAME: ${{ steps.version.outputs.tag }}
+          VERSION_NAME: ${{ steps.version.outputs.version }}
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          RELEASE_NOTES_INPUT: ${{ inputs.release_notes }}
+        run: |
+          PREV_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="$PREV_TAG..HEAD"
+          else
+            RANGE="HEAD"
+          fi
+
+          {
+            echo "## 更新内容"
+            if [ -n "$RELEASE_NOTES_INPUT" ]; then
+              printf '%s\n' "$RELEASE_NOTES_INPUT"
+            else
+              echo "- 手动发布 ${TAG_NAME}。"
+            fi
+            echo
+            echo "## 提交记录"
+            git log --no-merges --pretty=format:'- %s (`%h`)' "$RANGE"
+            echo
+            echo
+            echo "## 构建信息"
+            echo "- 版本：${VERSION_NAME} (${VERSION_CODE})"
+            echo "- 分支：${GITHUB_REF_NAME}"
+            echo "- 源提交：${GITHUB_SHA}"
+          } > RELEASE_NOTES.md
+
+      - name: Generate Gradle Wrapper
+        run: gradle wrapper --gradle-version 8.10.2
+
+      - name: Build Release APK
+        run: ./gradlew :app:assembleRelease
+
+      - name: Prepare artifact name
+        id: meta
+        run: |
+          APK_NAME="OPlusHeadsetAudioHelper-${{ steps.version.outputs.tag }}.apk"
+          echo "apk_name=${APK_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Sign APK
+        uses: ilharp/sign-android-release@v2
+        id: sign
+        with:
+          releaseDir: app/build/outputs/apk/release
+          signingKey: ${{ secrets.SIGNING_KEY }}
+          keyAlias: ${{ secrets.KEY_ALIAS }}
+          keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+          buildToolsVersion: 35.0.0
+
+      - name: Rename signed APK
+        run: |
+          SIGNED="$(find app/build/outputs/apk/release -name '*-signed.apk' | head -1)"
+          if [ -z "$SIGNED" ]; then
+            echo "No signed APK found, falling back to unsigned"
+            SIGNED="$(find app/build/outputs/apk/release -name '*.apk' | head -1)"
+          fi
+          mv "$SIGNED" "app/build/outputs/apk/release/${{ steps.meta.outputs.apk_name }}"
+
+      - name: Commit version bump and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/build.gradle.kts
+          git commit -m "chore: release ${{ steps.version.outputs.tag }}"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.tag }}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: 欧加耳机音质助手 ${{ steps.version.outputs.tag }}
+          body_path: RELEASE_NOTES.md
+          files: app/build/outputs/apk/release/${{ steps.meta.outputs.apk_name }}
+          prerelease: ${{ inputs.prerelease }}
+          draft: ${{ inputs.draft }}

@@ -1,4 +1,4 @@
-# 耳机音质助手
+# 欧加耳机音质助手
 
 `MelodyCodecTweaker` 是一个面向 OPPO / OnePlus「无线耳机」App 的 LSPosed 模块。它不会替换系统文件，也不会修改「无线耳机」App 安装包，而是在运行时注入音质控制项，让部分原本藏在系统蓝牙栈里的编解码器、播放质量、采样率和 LE Audio 状态可以直接在耳机控制面板里操作。
 
@@ -38,7 +38,7 @@
 4. 强制停止「无线耳机」、蓝牙相关进程和无线设置，或者直接重启手机。
 5. 打开「无线耳机」App，进入耳机主面板或 OneSpace 面板查看注入项。
 
-如果只想临时停用模块，可以打开桌面图标「耳机音质助手」，关闭模块总开关。关闭后需要重启「无线耳机」进程，宿主页才会完全恢复原状。
+如果只想临时停用模块，可以打开桌面图标「欧加耳机音质助手」，关闭模块总开关。关闭后需要重启「无线耳机」进程，宿主页才会完全恢复原状。
 
 ## 内置诊断页
 
@@ -61,7 +61,7 @@
 诊断页里的「一键收集反馈包」会生成：
 
 ```text
-HeadsetAudioHelper-feedback-YYYYMMDD-HHMMSS.zip
+OPlusHeadsetAudioHelper-feedback-YYYYMMDD-HHMMSS.zip
 ```
 
 优先保存到：
@@ -180,7 +180,10 @@ gradle wrapper --gradle-version 8.10.2
 app/build/outputs/apk/release/
 ```
 
-GitHub Actions 会在推送 `main` / `master` 或手动触发时自动构建，并使用仓库 secrets 签名后上传 APK artifact。
+GitHub Actions 分为两个入口：
+
+- `Build APK`：推送 `main` / `master`、PR 或手动触发时执行，用于日常开发构建，产物名带 `dev` 和提交号。
+- `Release APK`：仅手动触发。它会按 patch / minor / major 或指定版本号自动抬升 `versionName` 和 `versionCode`，构建签名 APK，提交版本号变更，创建 `vX.Y.Z` tag，并在 GitHub Release 中写入手填说明和自动生成的提交记录。
 
 ## 项目结构
 

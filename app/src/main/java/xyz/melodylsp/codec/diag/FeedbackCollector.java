@@ -42,7 +42,7 @@ public final class FeedbackCollector {
 
     public static String collect(Context context) throws Exception {
         String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(new Date());
-        String name = "HeadsetAudioHelper-feedback-" + stamp + ".zip";
+        String name = "OPlusHeadsetAudioHelper-feedback-" + stamp + ".zip";
         OutputTarget target = openTarget(context, name);
         try {
             ZipOutputStream zip = new ZipOutputStream(target.stream);
@@ -94,7 +94,7 @@ public final class FeedbackCollector {
 
     private static String buildSummary(Context context) {
         StringBuilder sb = new StringBuilder();
-        sb.append("Headset Audio Helper feedback\n");
+        sb.append("OPlus Headset Audio Helper feedback\n");
         sb.append("Generated: ").append(new Date()).append('\n');
         sb.append("Module: ").append(BuildConfig.VERSION_NAME)
                 .append(" (").append(BuildConfig.VERSION_CODE).append(")\n\n");

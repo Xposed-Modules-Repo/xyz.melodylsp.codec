@@ -41,7 +41,7 @@ jobs:
         run: |
           SHORT_SHA=$(git rev-parse --short HEAD)
           DATE=$(date +'%Y%m%d')
-          APK_NAME="MelodyCodecTweaker-${SHORT_SHA}-${DATE}.apk"
+          APK_NAME="OPlusHeadsetAudioHelper-dev-${SHORT_SHA}-${DATE}.apk"
           echo "apk_name=${APK_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Sign APK

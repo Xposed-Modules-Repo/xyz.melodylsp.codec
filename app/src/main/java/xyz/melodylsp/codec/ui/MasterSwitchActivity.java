@@ -85,9 +85,9 @@ public final class MasterSwitchActivity extends Activity {
         titleLp.leftMargin = dp(14);
         header.addView(titleBox, titleLp);
 
-        TextView title = text("耳机音质助手", 24, Color.rgb(20, 28, 38), true);
+        TextView title = text("欧加耳机音质助手", 24, Color.rgb(20, 28, 38), true);
         titleBox.addView(title, matchWrap());
-        TextView subtitle = text("音质控制、LE Audio 和 Hook 诊断都在这里", 14,
+        TextView subtitle = text("OPPO / OnePlus 音质控制、LE Audio 和 Hook 诊断都在这里", 14,
                 Color.rgb(90, 103, 118), false);
         subtitle.setPadding(0, dp(4), 0, 0);
         titleBox.addView(subtitle, matchWrap());
@@ -237,7 +237,7 @@ public final class MasterSwitchActivity extends Activity {
                             Toast.LENGTH_LONG).show();
                 }
             });
-        }, "HeadsetAudioHelper-feedback").start();
+        }, "OPlusHeadsetAudioHelper-feedback").start();
     }
 
     private void addStatusRow(String label, String key) {
