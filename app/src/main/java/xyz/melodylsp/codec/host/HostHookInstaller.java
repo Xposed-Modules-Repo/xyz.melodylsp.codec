@@ -169,8 +169,8 @@ public final class HostHookInstaller {
      * Generic update-resilience fallback. Direct hooks against host fragments are always at
      * risk because Melody's Preference fragments and their base class can be R8-renamed between
      * app releases. ActivityLifecycleCallbacks is a framework API, so it survives host updates:
-     * whenever any Melody Activity resumes, scan its support FragmentManager and dispatch only
-     * PreferenceScreens carrying known codec-surface markers.
+     * whenever a supported Melody Activity resumes, scan its support FragmentManager and
+     * dispatch only PreferenceScreens carrying known codec-surface markers.
      */
     private synchronized void registerActivityScanCallbacks(Application app) {
         if (activityScanRegistered) return;
@@ -224,7 +224,7 @@ public final class HostHookInstaller {
     private boolean rememberActivity(Activity activity) {
         if (activity == null) return false;
         String name = activity.getClass().getName();
-        if (name == null || !name.startsWith("com.oplus.melody.")) return false;
+        if (!isSupportedHostActivityName(name)) return false;
         knownActivities.add(activity);
         return true;
     }
@@ -235,12 +235,44 @@ public final class HostHookInstaller {
             for (Activity activity : new ArrayList<>(knownActivities)) {
                 if (activity == null || activity.isFinishing()) continue;
                 String name = activity.getClass().getName();
-                if (name == null || !name.startsWith("com.oplus.melody.")) continue;
+                if (!isSupportedHostActivityName(name)) continue;
                 scheduleKnownFragmentScan(activity, /* attempt= */ 0, "surface.rescan");
                 scheduled++;
             }
             MLog.event("surface.rescan.requested", "reason", reason, "activities", scheduled);
         });
+    }
+
+    private static boolean isSupportedHostActivityName(String name) {
+        return CLASS_DETAIL_MAIN_ACTIVITY.equals(name)
+                || CLASS_ONE_SPACE_ACTIVITY.equals(name);
+    }
+
+    private static boolean isDetailMainHost(Object fragment) {
+        if (CLASS_DETAIL_MAIN_ACTIVITY.equals(activityNameFromFragment(fragment))) return true;
+        String name = fragment != null ? fragment.getClass().getName() : null;
+        return CLASS_HIGH_AUDIO.equals(name);
+    }
+
+    private static boolean isOneSpaceHost(Object fragment) {
+        if (CLASS_ONE_SPACE_ACTIVITY.equals(activityNameFromFragment(fragment))) return true;
+        String name = fragment != null ? fragment.getClass().getName() : null;
+        return name != null && name.startsWith("com.oplus.melody.onespace.");
+    }
+
+    private static boolean isSupportedFragmentHost(Object fragment) {
+        if (fragment == null) return false;
+        String activityName = activityNameFromFragment(fragment);
+        if (isSupportedHostActivityName(activityName)) return true;
+        String fragmentName = fragment.getClass().getName();
+        return CLASS_HIGH_AUDIO.equals(fragmentName)
+                || fragmentName.startsWith("com.oplus.melody.onespace.");
+    }
+
+    private static String activityNameFromFragment(Object fragment) {
+        Object activity = invokeNoArg(fragment, "getActivity");
+        if (activity == null) activity = invokeNoArg(fragment, "requireActivity");
+        return activity != null ? activity.getClass().getName() : null;
     }
 
     /**
@@ -283,6 +315,7 @@ public final class HostHookInstaller {
     private void scheduleSurfaceDispatch(Object fragment, int attempt) {
         new Handler(Looper.getMainLooper()).postDelayed(() -> {
             if (controller == null) return;
+            if (!isSupportedFragmentHost(fragment)) return;
             try {
                 Object screen = PrefRef.getPreferenceScreen(fragment);
                 if (screen != null && attachedScreens.contains(screen)) {
@@ -332,6 +365,8 @@ public final class HostHookInstaller {
     private boolean dispatchSurface(Object fragment) {
         Object screen = PrefRef.getPreferenceScreen(fragment);
         if (screen == null) return false;
+        boolean detailMainHost = isDetailMainHost(fragment);
+        boolean oneSpaceHost = isOneSpaceHost(fragment);
 
         if (hasCodecMarker(screen)) {
             // Already injected on this screen.
@@ -339,47 +374,20 @@ public final class HostHookInstaller {
             return true;
         }
 
-        if (PrefRef.findPreference(screen, KEY_HIRES_ITEM) != null) {
+        if (detailMainHost && PrefRef.findPreference(screen, KEY_HIRES_ITEM) != null) {
             return injectAfterHires(fragment, screen);
         }
 
-        if (PrefRef.findPreference(screen, MelodyResIds.KEY_NOISE_MENU_CATEGORY) != null
-                || PrefRef.findPreference(screen, MelodyResIds.KEY_MORE_SETTING_CATEGORY) != null
-                || PrefRef.findPreference(screen, KEY_NOISE_SWITCH) != null
-                || PrefRef.findPreference(screen, KEY_MORE_SETTING) != null) {
+        if (oneSpaceHost && isOneSpaceScreen(screen)) {
             return injectIntoOneSpace(fragment, screen);
         }
 
-        // DetailMain fallback anchors (TODO A3) for earphones without a Hi-Res switch:
-        // anchor after the Equalizer row, else after the first visible PreferenceCategory.
-        if (PrefRef.findPreference(screen, KEY_EQUALIZER_ITEM) != null) {
+        // DetailMain fallback anchor for earphones without a Hi-Res switch.
+        if (detailMainHost && PrefRef.findPreference(screen, KEY_EQUALIZER_ITEM) != null) {
             return injectAfterAnchorKey(fragment, screen, KEY_EQUALIZER_ITEM);
-        }
-        Object firstCategory = findFirstVisibleCategory(screen);
-        if (firstCategory != null) {
-            return injectAfterPreference(fragment, screen, firstCategory);
         }
 
         return false;
-    }
-
-    /**
-     * Find the first visible {@code PreferenceCategory}-shaped child on the screen (TODO A3
-     * last-resort anchor). Detected by runtime class-name containing {@code PreferenceCategory}
-     * so it works against the host's R8-minified COUI category subclasses.
-     */
-    private static Object findFirstVisibleCategory(Object screen) {
-        int count = PrefRef.getPreferenceCount(screen);
-        for (int i = 0; i < count; i++) {
-            Object pref = PrefRef.getPreference(screen, i);
-            if (pref == null) continue;
-            if (!PrefRef.isVisible(pref)) continue;
-            String name = pref.getClass().getName();
-            if (name.contains("PreferenceCategory")) {
-                return pref;
-            }
-        }
-        return null;
     }
 
     /** Inject the DetailMain codec block right after the preference identified by {@code key}. */
@@ -757,7 +765,7 @@ public final class HostHookInstaller {
     /**
      * Generic Activity -> FragmentManager scanner. It intentionally only routes screens with
      * strong markers (Hi-Res / Equalizer / OneSpace / our own marker) so ordinary Melody
-     * preference pages cannot pick up the codec block through the last-resort category anchor.
+     * preference pages cannot pick up the codec block.
      */
     private void scheduleKnownFragmentScan(Object activity, int attempt, String source) {
         new Handler(Looper.getMainLooper()).postDelayed(() -> {
@@ -799,6 +807,7 @@ public final class HostHookInstaller {
     private static boolean isOneSpaceScreen(Object screen) {
         return PrefRef.findPreference(screen, MelodyResIds.KEY_NOISE_MENU_CATEGORY) != null
                 || PrefRef.findPreference(screen, MelodyResIds.KEY_MORE_SETTING_CATEGORY) != null
+                || PrefRef.findPreference(screen, KEY_NOISE_SWITCH_CATEGORY) != null
                 || PrefRef.findPreference(screen, KEY_NOISE_SWITCH) != null
                 || PrefRef.findPreference(screen, KEY_MORE_SETTING) != null;
     }
