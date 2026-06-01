@@ -1104,7 +1104,7 @@ public final class CodecController {
 
         DisplayMetrics metrics = popupContext.getResources().getDisplayMetrics();
         int contentWidth = Math.min(metrics.widthPixels - dp(popupContext, 48),
-                dp(popupContext, 232));
+                dp(popupContext, 208));
         int width = contentWidth + shadowPad * 2;
         PopupWindow popup = new PopupWindow(
                 shell, width, LinearLayout.LayoutParams.WRAP_CONTENT, true);
@@ -1121,8 +1121,8 @@ public final class CodecController {
         if (anchor != null) {
             int[] loc = new int[2];
             anchor.getLocationInWindow(loc);
-            int anchorRight = loc[0] + Math.max(anchor.getWidth(), dp(popupContext, 280));
-            x = anchorRight - width + shadowPad;
+            int boundaryRight = findPopupRightBoundary(anchor, popupContext, metrics);
+            x = boundaryRight - width + shadowPad;
             x = Math.max(dp(popupContext, 16),
                     Math.min(x, metrics.widthPixels - width - dp(popupContext, 16)));
             y = loc[1] - dp(popupContext, 8) - shadowPad;
@@ -1134,6 +1134,31 @@ public final class CodecController {
                 metrics.heightPixels - popupHeightEstimate - dp(popupContext, 96));
         y = Math.max(minY, Math.min(y, maxY));
         popup.showAtLocation(root, Gravity.TOP | Gravity.START, x, y);
+    }
+
+    private static int findPopupRightBoundary(View anchor, Context context, DisplayMetrics metrics) {
+        int fallbackRight = metrics.widthPixels - dp(context, 40);
+        if (anchor == null) return fallbackRight;
+        int[] loc = new int[2];
+        int bestRight = 0;
+        View cur = anchor;
+        int minCardWidth = Math.round(metrics.widthPixels * 0.62f);
+        int maxCardWidth = metrics.widthPixels - dp(context, 24);
+        while (cur != null) {
+            int width = cur.getWidth();
+            if (width >= minCardWidth && width <= maxCardWidth) {
+                cur.getLocationInWindow(loc);
+                int right = loc[0] + width;
+                if (right > bestRight && right < metrics.widthPixels - dp(context, 8)) {
+                    bestRight = right;
+                }
+            }
+            Object parent = cur.getParent();
+            cur = parent instanceof View ? (View) parent : null;
+        }
+        if (bestRight > 0) return bestRight;
+        anchor.getLocationInWindow(loc);
+        return Math.min(fallbackRight, loc[0] + anchor.getWidth());
     }
 
     private static Activity resolveLiveActivity(Subscription sub) {
