@@ -12,6 +12,7 @@ public final class CodecPreferences {
     public final Context uiContext;
     public final Object category;
     public final Object codecDisplay;
+    public final Object codecModeOption;
     public final Object qualityOption;
     public final Object sampleRateOption;
     public final Object rememberToggle;
@@ -22,10 +23,11 @@ public final class CodecPreferences {
             Context uiContext,
             Object category,
             Object codecDisplay,
+            Object codecModeOption,
             Object qualityOption,
             Object sampleRateOption,
             Object rememberToggle) {
-        this(uiContext, category, codecDisplay, qualityOption, sampleRateOption,
+        this(uiContext, category, codecDisplay, codecModeOption, qualityOption, sampleRateOption,
                 rememberToggle, null);
     }
 
@@ -33,6 +35,7 @@ public final class CodecPreferences {
             Context uiContext,
             Object category,
             Object codecDisplay,
+            Object codecModeOption,
             Object qualityOption,
             Object sampleRateOption,
             Object rememberToggle,
@@ -40,6 +43,7 @@ public final class CodecPreferences {
         this.uiContext = uiContext;
         this.category = category;
         this.codecDisplay = codecDisplay;
+        this.codecModeOption = codecModeOption;
         this.qualityOption = qualityOption;
         this.sampleRateOption = sampleRateOption;
         this.rememberToggle = rememberToggle;

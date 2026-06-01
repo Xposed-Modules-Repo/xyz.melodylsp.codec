@@ -768,6 +768,9 @@ public final class CodecController {
         }
         PrefRef.setVisible(sub.prefs.qualityOption, true);
         PrefRef.setVisible(sub.prefs.sampleRateOption, true);
+        if (PrefRef.isVisible(sub.prefs.codecModeOption)) {
+            PrefRef.setSummary(sub.prefs.codecModeOption, STATE_RESTORING_CLASSIC);
+        }
         PrefRef.setSummary(sub.prefs.qualityOption, STATE_RESTORING_CLASSIC);
         PrefRef.setSummary(sub.prefs.sampleRateOption, STATE_RESTORING_CLASSIC);
         setBlockDisabled(sub, true);
@@ -803,6 +806,18 @@ public final class CodecController {
             MLog.w("OnPreferenceClickListener interface not resolvable; UI is read-only");
             return;
         }
+        Object codecModeListener = Proxy.newProxyInstance(cl, new Class[]{clickListenerCls},
+                (proxy, method, args) -> {
+                    try {
+                        Object sourcePref = args != null && args.length > 0
+                                ? args[0] : sub.prefs.codecModeOption;
+                        showCodecModePicker(sub, sourcePref);
+                    } catch (Throwable t) {
+                        MLog.e("showCodecModePicker failed", t);
+                        Toast.makeText(context, Strings.TOAST_APPLY_FAILED, Toast.LENGTH_SHORT).show();
+                    }
+                    return true;
+                });
         Object qualityListener = Proxy.newProxyInstance(cl, new Class[]{clickListenerCls},
                 (proxy, method, args) -> {
                     try {
@@ -827,6 +842,7 @@ public final class CodecController {
                     }
                     return true;
                 });
+        invokeSetClickListener(sub.prefs.codecModeOption, codecModeListener, clickListenerCls);
         invokeSetClickListener(sub.prefs.qualityOption, qualityListener, clickListenerCls);
         invokeSetClickListener(sub.prefs.sampleRateOption, sampleListener, clickListenerCls);
     }
@@ -843,6 +859,42 @@ public final class CodecController {
                     return handleRememberChange(sub, args[1]);
                 });
         invokeSetChangeListener(sub.prefs.rememberToggle, listener, changeListenerCls);
+    }
+
+    /**
+     * Pop the official-style high-quality / standard codec mode selector. This mirrors
+     * SettingsLib's A2DP row: "高品质" toggles optional codecs on, "标准" toggles them off.
+     */
+    private void showCodecModePicker(Subscription sub, Object sourcePref) {
+        CodecSnapshot snapshot = lastSnapshot.get();
+        if (snapshot == null) {
+            Toast.makeText(context, Strings.STATE_CODEC_UNKNOWN, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!snapshot.supportsOptionalCodecs()) {
+            Toast.makeText(context,
+                    Strings.TOAST_CODEC_MODE_UNSUPPORTED, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        CharSequence[] entries = {
+                codecModeEntry(snapshot, true),
+                codecModeEntry(snapshot, false)
+        };
+        int checked = snapshot.optionalCodecsEnabled() ? 0 : 1;
+        Context dialogContext = resolveLiveDialogContext(sub);
+        if (dialogContext == null) {
+            MLog.w("showCodecModePicker skipped: no live activity context");
+            return;
+        }
+        try {
+            showChoicePopup(sub, sourcePref, dialogContext, entries, checked, which -> {
+                boolean enable = which == 0;
+                applyOptionalCodecWrite(sub, enable);
+            });
+        } catch (Throwable t) {
+            MLog.e("showCodecModePicker dialog.show failed", t);
+            Toast.makeText(context, Strings.TOAST_APPLY_FAILED, Toast.LENGTH_SHORT).show();
+        }
     }
 
     /**
@@ -1312,6 +1364,41 @@ public final class CodecController {
         }));
     }
 
+    private void applyOptionalCodecWrite(Subscription sub, boolean enable) {
+        PrefRef.setSummary(sub.prefs.codecModeOption, Strings.STATE_SWITCHING_CODEC);
+        setBlockDisabled(sub, true);
+        bridge.setOptionalCodecs(sub.mac, enable).whenComplete((result, ex) -> mainHandler.post(() -> {
+            setBlockDisabled(sub, false);
+            if (ex != null) {
+                MLog.e("setOptionalCodecs future failed", ex);
+                Toast.makeText(context, Strings.TOAST_APPLY_FAILED, Toast.LENGTH_SHORT).show();
+                refreshSnapshot(sub);
+                return;
+            }
+            switch (result.outcome) {
+                case CONFIRMED:
+                    refreshSnapshot(sub);
+                    refreshSnapshotDelayed(sub, 700L);
+                    refreshSnapshotDelayed(sub, 1800L);
+                    refreshSnapshotDelayed(sub, 3600L);
+                    break;
+                case TIMEOUT_ROLLED_BACK:
+                    Toast.makeText(context, Strings.TOAST_APPLY_FAILED, Toast.LENGTH_SHORT).show();
+                    if (result.rollbackSnapshot != null) {
+                        publish(result.rollbackSnapshot, sub);
+                    } else {
+                        refreshSnapshot(sub);
+                    }
+                    break;
+                case FAILED:
+                default:
+                    Toast.makeText(context, Strings.TOAST_APPLY_FAILED, Toast.LENGTH_SHORT).show();
+                    refreshSnapshot(sub);
+                    break;
+            }
+        }));
+    }
+
     private void refreshSnapshot(Subscription sub) {
         Thread worker = new Thread(() -> {
             CodecSnapshot snapshot;
@@ -1386,6 +1473,7 @@ public final class CodecController {
         }
         PrefRef.setSummary(sub.prefs.qualityOption, state);
         PrefRef.setSummary(sub.prefs.sampleRateOption, state);
+        PrefRef.setVisible(sub.prefs.codecModeOption, false);
         PrefRef.setVisible(sub.prefs.qualityOption, true);
         PrefRef.setVisible(sub.prefs.sampleRateOption, true);
         setBlockDisabled(sub, true);
@@ -1424,6 +1512,7 @@ public final class CodecController {
         }
         setBlockDisabled(sub, false);
 
+        renderCodecMode(snapshot, sub);
         renderQuality(snapshot, sub);
         renderSampleRate(snapshot, sub);
         applyLeAudioToSwitch(sub);
@@ -1442,6 +1531,7 @@ public final class CodecController {
             PrefRef.setTitle(sub.prefs.codecDisplay,
                     Strings.CODEC_BLOCK_TITLE + " : " + Strings.CODEC_LABEL_LC3);
         }
+        PrefRef.setVisible(sub.prefs.codecModeOption, false);
         PrefRef.setVisible(sub.prefs.qualityOption, false);
         PrefRef.setVisible(sub.prefs.sampleRateOption, false);
         setBlockDisabled(sub, false);
@@ -1455,10 +1545,22 @@ public final class CodecController {
         if (sub == null || sub.prefs == null) return;
         PrefRef.setDisabled(sub.prefs.category, disabled);
         PrefRef.setDisabled(sub.prefs.codecDisplay, disabled);
+        PrefRef.setDisabled(sub.prefs.codecModeOption, disabled);
         PrefRef.setDisabled(sub.prefs.qualityOption, disabled);
         PrefRef.setDisabled(sub.prefs.sampleRateOption, disabled);
         PrefRef.setDisabled(sub.prefs.rememberToggle, disabled);
         PrefRef.setDisabled(sub.prefs.leAudioSwitch, disabled);
+    }
+
+    private void renderCodecMode(CodecSnapshot snapshot, Subscription sub) {
+        Object mode = sub.prefs.codecModeOption;
+        if (mode == null) return;
+        if (!snapshot.supportsOptionalCodecs()) {
+            PrefRef.setVisible(mode, false);
+            return;
+        }
+        PrefRef.setSummary(mode, codecModeEntry(snapshot, snapshot.optionalCodecsEnabled()));
+        PrefRef.setVisible(mode, true);
     }
 
     private void renderQuality(CodecSnapshot snapshot, Subscription sub) {
@@ -1502,6 +1604,62 @@ public final class CodecController {
         if (activeHz <= 0) activeHz = SAMPLE_RATE_48000_HZ;
         PrefRef.setSummary(r, CodecLabelTable.sampleRateLabel(activeHz));
         PrefRef.setVisible(r, true);
+    }
+
+    private String codecModeEntry(CodecSnapshot snapshot, boolean highQuality) {
+        String label = highQuality
+                ? bestHighQualityCodecLabel(snapshot)
+                : standardCodecLabel(snapshot);
+        return (highQuality ? Strings.CODEC_MODE_HIGH_QUALITY : Strings.CODEC_MODE_STANDARD)
+                + "（" + label + "）";
+    }
+
+    private String bestHighQualityCodecLabel(CodecSnapshot snapshot) {
+        if (snapshot == null) return Strings.STATE_CODEC_UNKNOWN;
+        if (snapshot.optionalCodecsEnabled()) {
+            return CodecLabelTable.codecLabel(
+                    context, snapshot.activeCodecType, snapshot.activeCodecSpecific1);
+        }
+        int best = bestSelectableHighQualityCodec(snapshot.selectableCodecTypes);
+        if (best >= 0) {
+            return CodecLabelTable.codecLabel(context, best);
+        }
+        return Strings.STATE_CODEC_UNKNOWN;
+    }
+
+    private String standardCodecLabel(CodecSnapshot snapshot) {
+        if (snapshot != null && !snapshot.optionalCodecsEnabled()) {
+            return CodecLabelTable.codecLabel(
+                    context, snapshot.activeCodecType, snapshot.activeCodecSpecific1);
+        }
+        return Strings.CODEC_LABEL_SBC;
+    }
+
+    private static int bestSelectableHighQualityCodec(int[] codecTypes) {
+        if (codecTypes == null || codecTypes.length == 0) return -1;
+        int[] priority = {
+                CodecLabelTable.CODEC_LHDC,
+                CodecLabelTable.CODEC_LHDC_V3_LEGACY,
+                19,
+                18,
+                CodecLabelTable.CODEC_LDAC,
+                CodecLabelTable.CODEC_APTX_ADAPTIVE,
+                CodecLabelTable.CODEC_APTX_HD,
+                CodecLabelTable.CODEC_APTX,
+                CodecLabelTable.CODEC_AAC
+        };
+        for (int preferred : priority) {
+            for (int type : codecTypes) {
+                if (type == preferred || (CodecLabelTable.isLhdc(preferred)
+                        && CodecLabelTable.isLhdc(type))) {
+                    return type;
+                }
+            }
+        }
+        for (int type : codecTypes) {
+            if (type != CodecLabelTable.CODEC_SBC) return type;
+        }
+        return -1;
     }
 
     private static int linkedSampleRateForQuality(CodecSnapshot snapshot, long specific1) {

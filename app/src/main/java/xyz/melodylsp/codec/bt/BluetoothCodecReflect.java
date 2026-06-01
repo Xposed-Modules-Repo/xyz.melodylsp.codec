@@ -9,7 +9,9 @@ import android.content.Context;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -26,6 +28,9 @@ import xyz.melodylsp.codec.util.MLog;
 public final class BluetoothCodecReflect {
 
     private static final int CODEC_PRIORITY_HIGHEST = 1_000_000;
+    private static final int OPTIONAL_CODECS_PREF_DISABLED = 0;
+    private static final int OPTIONAL_CODECS_PREF_ENABLED = 1;
+    private static final int OPTIONAL_CODECS_UNKNOWN = -1;
 
     private final Context context;
     private volatile BluetoothA2dp a2dpProxy;
@@ -82,7 +87,7 @@ public final class BluetoothCodecReflect {
                     proxy.getClass().getName(), "getCodecStatus", e);
         }
         if (status == null) return null;
-        return readSnapshotFromCodecStatus(mac, status);
+        return readSnapshotFromCodecStatus(mac, status, proxy, device);
     }
 
     private static boolean isConnected(BluetoothA2dp proxy, BluetoothDevice device) {
@@ -119,6 +124,20 @@ public final class BluetoothCodecReflect {
         }
     }
 
+    /** Mirrors SettingsLib's high-quality audio switch: persist preference, then renegotiate. */
+    public void setOptionalCodecs(String mac, boolean enable) {
+        BluetoothA2dp proxy = acquireProxyBlocking();
+        BluetoothDevice device = ensureDevice(mac);
+        boolean wrotePreference = invokeOptionalCodecPreference(proxy, device, enable);
+        boolean toggled = invokeOptionalCodecToggle(proxy, device, enable);
+        if (!wrotePreference && !toggled) {
+            throw new BluetoothCodecReflectException(
+                    proxy.getClass().getName(), "setOptionalCodecs", null);
+        }
+        MLog.event("a2dp.setOptionalCodecs", "mac", mac, "enable", enable,
+                "pref", wrotePreference, "toggle", toggled);
+    }
+
     private BluetoothAdapter resolveAdapter() {
         BluetoothManager mgr = (BluetoothManager) context.getSystemService(Context.BLUETOOTH_SERVICE);
         BluetoothAdapter adapter = mgr != null ? mgr.getAdapter() : BluetoothAdapter.getDefaultAdapter();
@@ -140,7 +159,8 @@ public final class BluetoothCodecReflect {
         }
     }
 
-    private CodecSnapshot readSnapshotFromCodecStatus(String mac, Object status) {
+    private CodecSnapshot readSnapshotFromCodecStatus(
+            String mac, Object status, BluetoothA2dp proxy, BluetoothDevice device) {
         Class<?> statusCls = status.getClass();
         try {
             Object active = statusCls.getMethod("getCodecConfig").invoke(status);
@@ -156,6 +176,7 @@ public final class BluetoothCodecReflect {
 
             int sampleRateMask = rate;
             long[] selSpecific1 = new long[0];
+            int[] selectableCodecTypes = extractSelectableCodecTypes(selectableArr);
             if (selectableArr != null) {
                 List<?> list = (List<?>) selectableArr;
                 for (Object cap : list) {
@@ -173,9 +194,79 @@ public final class BluetoothCodecReflect {
                     mac,
                     activeCodec, rate, bits, channel,
                     s1, s2, s3, s4,
-                    selSpecific1, sampleRateMask);
+                    selSpecific1, sampleRateMask,
+                    selectableCodecTypes,
+                    readOptionalCodecsSupported(proxy, device),
+                    readOptionalCodecsEnabled(proxy, device));
         } catch (Exception e) {
             throw new BluetoothCodecReflectException(statusCls.getName(), "decode", e);
+        }
+    }
+
+    private static int[] extractSelectableCodecTypes(Object selectableArr) {
+        if (!(selectableArr instanceof List<?>)) return new int[0];
+        Set<Integer> seen = new LinkedHashSet<>();
+        for (Object cap : (List<?>) selectableArr) {
+            if (cap == null) continue;
+            try {
+                seen.add((Integer) cap.getClass().getMethod("getCodecType").invoke(cap));
+            } catch (Throwable ignored) {
+            }
+        }
+        int[] out = new int[seen.size()];
+        int i = 0;
+        for (Integer value : seen) {
+            out[i++] = value != null ? value : 0;
+        }
+        return out;
+    }
+
+    private static int readOptionalCodecsSupported(BluetoothA2dp proxy, BluetoothDevice device) {
+        return readOptionalCodecInt(proxy, device, "isOptionalCodecsSupported");
+    }
+
+    private static int readOptionalCodecsEnabled(BluetoothA2dp proxy, BluetoothDevice device) {
+        return readOptionalCodecInt(proxy, device, "isOptionalCodecsEnabled");
+    }
+
+    private static int readOptionalCodecInt(
+            BluetoothA2dp proxy, BluetoothDevice device, String methodName) {
+        if (proxy == null || device == null) return OPTIONAL_CODECS_UNKNOWN;
+        try {
+            Method m = proxy.getClass().getMethod(methodName, BluetoothDevice.class);
+            Object out = m.invoke(proxy, device);
+            if (out instanceof Number) return ((Number) out).intValue();
+            if (out instanceof Boolean) return (Boolean) out ? 1 : 0;
+        } catch (Throwable t) {
+            MLog.w("optional codec read failed: " + methodName, t);
+        }
+        return OPTIONAL_CODECS_UNKNOWN;
+    }
+
+    private static boolean invokeOptionalCodecPreference(
+            BluetoothA2dp proxy, BluetoothDevice device, boolean enable) {
+        try {
+            Method m = proxy.getClass().getMethod(
+                    "setOptionalCodecsEnabled", BluetoothDevice.class, int.class);
+            m.invoke(proxy, device,
+                    enable ? OPTIONAL_CODECS_PREF_ENABLED : OPTIONAL_CODECS_PREF_DISABLED);
+            return true;
+        } catch (Throwable t) {
+            MLog.w("setOptionalCodecsEnabled failed", t);
+            return false;
+        }
+    }
+
+    private static boolean invokeOptionalCodecToggle(
+            BluetoothA2dp proxy, BluetoothDevice device, boolean enable) {
+        String name = enable ? "enableOptionalCodecs" : "disableOptionalCodecs";
+        try {
+            Method m = proxy.getClass().getMethod(name, BluetoothDevice.class);
+            m.invoke(proxy, device);
+            return true;
+        } catch (Throwable t) {
+            MLog.w(name + " failed", t);
+            return false;
         }
     }
 

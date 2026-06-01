@@ -17,6 +17,7 @@ import xyz.melodylsp.codec.bridge.ICodecBridgeListener;
 interface ICodecBridge {
     CodecSnapshot getStatus(String mac);
     int setCodec(in CodecRequest request);
+    int setOptionalCodecs(String mac, boolean enable);
     void register(ICodecBridgeListener listener);
     void unregister(ICodecBridgeListener listener);
 }

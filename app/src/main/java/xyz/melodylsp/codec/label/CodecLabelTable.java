@@ -30,6 +30,7 @@ public final class CodecLabelTable {
     public static final int CODEC_OPUS = 6;
     public static final int CODEC_APTX_ADAPTIVE = 7;
     public static final int CODEC_LHDC = 8;
+    public static final int CODEC_LHDC_V3_LEGACY = 9;
     /**
      * OPPO / OnePlus vendor stack assigns LHDC variants to a vendor id range. The exact sub-id
      * depends on the vendor build (0x13 for the OPPO Enco X3, 0x14 for some Reno builds). We
@@ -79,6 +80,7 @@ public final class CodecLabelTable {
             case CODEC_APTX_ADAPTIVE:
                 return Strings.CODEC_LABEL_APTX_ADAPTIVE;
             case CODEC_LHDC:
+            case CODEC_LHDC_V3_LEGACY:
                 return Strings.CODEC_LABEL_LHDC;
             default:
                 if (codecType >= OPLUS_VENDOR_LHDC_RANGE_LOW
@@ -141,7 +143,7 @@ public final class CodecLabelTable {
 
     /** Returns true when the codec id should be treated as LHDC for quality decoding. */
     public static boolean isLhdc(int codecType) {
-        if (codecType == CODEC_LHDC) return true;
+        if (codecType == CODEC_LHDC || codecType == CODEC_LHDC_V3_LEGACY) return true;
         return codecType >= OPLUS_VENDOR_LHDC_RANGE_LOW
                 && codecType <= OPLUS_VENDOR_LHDC_RANGE_HIGH;
     }
@@ -159,7 +161,7 @@ public final class CodecLabelTable {
      * @param codecSpecific1 the active {@code codecSpecific1} vendor word
      */
     public static boolean looksLikeLhdc(int codecType, long codecSpecific1) {
-        if (codecType == CODEC_LHDC) return true;
+        if (codecType == CODEC_LHDC || codecType == CODEC_LHDC_V3_LEGACY) return true;
         if (codecType < OPLUS_VENDOR_LHDC_RANGE_LOW || codecType > OPLUS_VENDOR_LHDC_RANGE_HIGH) {
             return false;
         }

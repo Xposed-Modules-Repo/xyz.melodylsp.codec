@@ -11,6 +11,7 @@ public final class Strings {
 
     public static final String CODEC_BLOCK_TITLE = "蓝牙音质";
 
+    public static final String CODEC_MODE_OPTION_TITLE = "编解码器";
     public static final String QUALITY_OPTION_TITLE = "播放质量";
     public static final String SAMPLE_RATE_OPTION_TITLE = "采样率";
     public static final String REMEMBER_TOGGLE_TITLE = "记住此耳机的选择";
@@ -19,10 +20,12 @@ public final class Strings {
 
     public static final String STATE_NO_DEVICE = "未连接";
     public static final String STATE_CODEC_UNKNOWN = "暂时无法获取编解码器信息";
+    public static final String STATE_SWITCHING_CODEC = "正在切换…";
 
     public static final String BANNER_VIA_SETTINGS = "已写入开发者选项";
     public static final String BANNER_VIA_ROOT = "已通过 root 写入开发者选项，蓝牙正在重连";
     public static final String TOAST_APPLY_FAILED = "切换未生效，请重试";
+    public static final String TOAST_CODEC_MODE_UNSUPPORTED = "当前耳机不支持高品质编解码器切换";
 
     public static final String FRESHNESS_LABEL_FORMAT = "上次同步：%s";
     public static final String QUALITY_UNKNOWN_VALUE_FORMAT = "未知档位（specific1=%s）";
@@ -43,6 +46,8 @@ public final class Strings {
     public static final String QUALITY_LHDC_CONNECTION = "连接优先";
     public static final String QUALITY_LHDC_BALANCED = "均衡";
     public static final String QUALITY_LHDC_HIGH = "音质优先";
+    public static final String CODEC_MODE_HIGH_QUALITY = "高品质";
+    public static final String CODEC_MODE_STANDARD = "标准";
 
     // LE Audio switch (TODO B1 / B2). The confirmation dialog text lives in
     // leaudio.LeAudioStrings because the dialog is shown from the wirelesssettings process.

@@ -49,6 +49,7 @@ public final class CodecBridgeClient {
     private static final String ACTION_CODEC_CONFIG_CHANGED =
             "android.bluetooth.a2dp.profile.action.CODEC_CONFIG_CHANGED";
     private static final long CONFIRM_TIMEOUT_MS = 3_000L;
+    private static final long OPTIONAL_CONFIRM_TIMEOUT_MS = 4_000L;
     private static final long LHDC_SECOND_STEP_DELAY_MS = 250L;
     private static final long CODEC_BROADCAST_TIMEOUT_MS = 1_500L;
 
@@ -137,6 +138,26 @@ public final class CodecBridgeClient {
                 });
     }
 
+    /** Toggle the platform high-quality audio preference (official SettingsLib path). */
+    public CompletableFuture<WriteResult> setOptionalCodecs(String mac, boolean enable) {
+        return applyDirectOptionalCodecs(mac, enable)
+                .handle((ignored, error) -> error)
+                .thenCompose(error -> {
+                    if (error != null) {
+                        MLog.w("Path-A setOptionalCodecs failed", unwrap(error));
+                        return setOptionalCodecsViaBridgeOrBroadcast(mac, enable);
+                    }
+                    return awaitOptionalConfirmation(mac, enable, WriteResult.Path.DIRECT_API)
+                            .thenCompose(result -> {
+                                if (result.outcome == WriteResult.Outcome.CONFIRMED) {
+                                    return CompletableFuture.completedFuture(result);
+                                }
+                                MLog.w("Path-A optional codecs accepted but not confirmed; trying bridge/broadcast");
+                                return setOptionalCodecsViaBridgeOrBroadcast(mac, enable);
+                            });
+                });
+    }
+
     private CompletableFuture<Void> applyDirectWrite(CodecRequest request) {
         if (!CodecLabelTable.isLhdc(request.codecType) || request.codecSpecific1 == 0L) {
             try {
@@ -179,6 +200,57 @@ public final class CodecBridgeClient {
             }
         }, LHDC_SECOND_STEP_DELAY_MS);
         return future;
+    }
+
+    private CompletableFuture<Void> applyDirectOptionalCodecs(String mac, boolean enable) {
+        try {
+            reflect.setOptionalCodecs(mac, enable);
+            return CompletableFuture.completedFuture(null);
+        } catch (Throwable t) {
+            CompletableFuture<Void> failed = new CompletableFuture<>();
+            failed.completeExceptionally(t);
+            return failed;
+        }
+    }
+
+    private CompletableFuture<WriteResult> setOptionalCodecsViaBridgeOrBroadcast(
+            String mac, boolean enable) {
+        ICodecBridge bridge = ensureBridge();
+        if (bridge != null) {
+            try {
+                int code = bridge.setOptionalCodecs(mac, enable);
+                if (code == CodecRequest.RESULT_OK) {
+                    return awaitOptionalConfirmation(mac, enable, WriteResult.Path.SYSTEM_BRIDGE)
+                            .thenCompose(result -> {
+                                if (result.outcome == WriteResult.Outcome.CONFIRMED) {
+                                    return CompletableFuture.completedFuture(result);
+                                }
+                                MLog.w("Path-B optional codecs accepted but not confirmed; trying broadcast");
+                                return setOptionalCodecsViaBroadcast(mac, enable);
+                            });
+                }
+                MLog.w("Path-B bridge.setOptionalCodecs returned " + code);
+            } catch (RemoteException re) {
+                MLog.w("Path-B bridge.setOptionalCodecs RemoteException", re);
+            }
+        }
+        return setOptionalCodecsViaBroadcast(mac, enable);
+    }
+
+    private CompletableFuture<WriteResult> setOptionalCodecsViaBroadcast(
+            String mac, boolean enable) {
+        return CompletableFuture.supplyAsync(() ->
+                        sendOptionalCodecSetBroadcast(mac, enable, CODEC_BROADCAST_TIMEOUT_MS))
+                .thenCompose(code -> {
+                    if (code == CodecRequest.RESULT_OK) {
+                        return awaitOptionalConfirmation(
+                                mac, enable, WriteResult.Path.SYSTEM_BROADCAST);
+                    }
+                    MLog.w("Path-B broadcast setOptionalCodecs returned " + code);
+                    return CompletableFuture.completedFuture(WriteResult.failed(
+                            WriteResult.Path.SYSTEM_BROADCAST,
+                            new IllegalStateException("optional codecs bridge unavailable")));
+                });
     }
 
     private CompletableFuture<WriteResult> setCodecViaBridgeOrFallback(CodecRequest request) {
@@ -392,6 +464,44 @@ public final class CodecBridgeClient {
         }
     }
 
+    private int sendOptionalCodecSetBroadcast(String mac, boolean enable, long timeoutMs) {
+        if (mac == null || mac.isEmpty()) {
+            return CodecRequest.RESULT_INVALID;
+        }
+        String requestId = UUID.randomUUID().toString();
+        AtomicReference<Integer> resultRef = new AtomicReference<>(CodecRequest.RESULT_TIMEOUT);
+        CountDownLatch latch = new CountDownLatch(1);
+        BroadcastReceiver receiver = codecReplyReceiver(requestId, intent -> {
+            resultRef.set(intent.getIntExtra(CodecIpc.EXTRA_RESULT, CodecRequest.RESULT_ERROR));
+            CodecSnapshot snapshot = readSnapshot(intent);
+            if (snapshot != null) {
+                dispatchSnapshot(snapshot);
+            }
+            latch.countDown();
+        });
+        registerCodecReplyReceiver(receiver);
+        try {
+            Intent intent = new Intent(CodecIpc.ACTION_SET_OPTIONAL_CODECS);
+            intent.setPackage(CodecIpc.BLUETOOTH_PKG);
+            intent.putExtra(CodecIpc.EXTRA_TOKEN, CodecIpc.TOKEN);
+            intent.putExtra(CodecIpc.EXTRA_REQUEST_ID, requestId);
+            intent.putExtra(CodecIpc.EXTRA_MAC, mac);
+            intent.putExtra(CodecIpc.EXTRA_OPTIONAL_CODECS_ENABLE, enable);
+            context.sendBroadcast(intent);
+            boolean delivered = latch.await(timeoutMs, TimeUnit.MILLISECONDS);
+            if (!delivered) {
+                MLog.w("optional codec broadcast set timed out");
+                return CodecRequest.RESULT_TIMEOUT;
+            }
+            return resultRef.get();
+        } catch (Throwable t) {
+            MLog.w("optional codec broadcast set failed", t);
+            return CodecRequest.RESULT_ERROR;
+        } finally {
+            unregisterQuietly(receiver);
+        }
+    }
+
     private interface CodecReplyHandler {
         void onReply(Intent intent);
     }
@@ -461,6 +571,8 @@ public final class CodecBridgeClient {
         String mac = intent.getStringExtra(CodecIpc.EXTRA_MAC);
         long[] selectableSpecific1 =
                 intent.getLongArrayExtra(CodecIpc.EXTRA_SELECTABLE_SPECIFIC_1);
+        int[] selectableCodecTypes =
+                intent.getIntArrayExtra(CodecIpc.EXTRA_SELECTABLE_CODEC_TYPES);
         return new CodecSnapshot(
                 mac,
                 intent.getIntExtra(CodecIpc.EXTRA_CODEC_TYPE, 0),
@@ -473,6 +585,9 @@ public final class CodecBridgeClient {
                 intent.getLongExtra(CodecIpc.EXTRA_CODEC_SPECIFIC_4, 0L),
                 selectableSpecific1,
                 intent.getIntExtra(CodecIpc.EXTRA_SELECTABLE_SAMPLE_RATE_MASK, 0),
+                selectableCodecTypes,
+                intent.getIntExtra(CodecIpc.EXTRA_OPTIONAL_CODECS_SUPPORTED, -1),
+                intent.getIntExtra(CodecIpc.EXTRA_OPTIONAL_CODECS_ENABLED, -1),
                 intent.getLongExtra(CodecIpc.EXTRA_READ_TIMESTAMP_MS, 0L));
     }
 
@@ -520,6 +635,45 @@ public final class CodecBridgeClient {
         return future;
     }
 
+    private CompletableFuture<WriteResult> awaitOptionalConfirmation(
+            String mac, boolean enable, WriteResult.Path path) {
+        CompletableFuture<WriteResult> future = new CompletableFuture<>();
+        AtomicReference<BroadcastReceiver> receiverRef = new AtomicReference<>();
+
+        BroadcastReceiver receiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context ctx, Intent intent) {
+                if (!ACTION_CODEC_CONFIG_CHANGED.equals(intent.getAction())) return;
+                if (future.isDone()) return;
+                CodecSnapshot s = safeReadStatus(mac);
+                if (s != null && optionalMatches(s, enable)) {
+                    completeWith(future, WriteResult.confirmed(path), receiverRef);
+                }
+            }
+        };
+        receiverRef.set(receiver);
+        try {
+            context.registerReceiver(receiver, new IntentFilter(ACTION_CODEC_CONFIG_CHANGED),
+                    Context.RECEIVER_EXPORTED);
+        } catch (Throwable t) {
+            context.registerReceiver(receiver, new IntentFilter(ACTION_CODEC_CONFIG_CHANGED));
+        }
+
+        mainHandler.postDelayed(() -> {
+            if (future.isDone()) return;
+            CodecSnapshot s = safeReadStatus(mac);
+            if (s != null && optionalMatches(s, enable)) {
+                completeWith(future, WriteResult.confirmed(path), receiverRef);
+            } else {
+                MLog.event("write.optional.timeout",
+                        "mac", mac, "enable", enable, "live", String.valueOf(s));
+                completeWith(future, WriteResult.rolledBack(path, s), receiverRef);
+            }
+        }, OPTIONAL_CONFIRM_TIMEOUT_MS);
+
+        return future;
+    }
+
     private CodecSnapshot safeReadStatus(String mac) {
         try {
             return getStatus(mac);
@@ -548,6 +702,16 @@ public final class CodecBridgeClient {
                     && requested == CodecLabelTable.LHDC_QUALITY_HIGH);
         }
         return snapshot.activeCodecSpecific1 == request.codecSpecific1;
+    }
+
+    private static boolean optionalMatches(CodecSnapshot snapshot, boolean enable) {
+        if (snapshot == null) return false;
+        if (snapshot.optionalCodecsEnabled == 1 || snapshot.optionalCodecsEnabled == 0) {
+            return enable ? snapshot.optionalCodecsEnabled == 1 : snapshot.optionalCodecsEnabled == 0;
+        }
+        return enable
+                ? snapshot.activeCodecType != CodecLabelTable.CODEC_SBC
+                : snapshot.activeCodecType == CodecLabelTable.CODEC_SBC;
     }
 
     private static Throwable unwrap(Throwable t) {

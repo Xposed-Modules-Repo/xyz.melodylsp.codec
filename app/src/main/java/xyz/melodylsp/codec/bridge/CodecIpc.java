@@ -15,6 +15,8 @@ public final class CodecIpc {
 
     public static final String ACTION_QUERY_CODEC = "xyz.melodylsp.codec.action.QUERY_CODEC";
     public static final String ACTION_SET_CODEC = "xyz.melodylsp.codec.action.SET_CODEC";
+    public static final String ACTION_SET_OPTIONAL_CODECS =
+            "xyz.melodylsp.codec.action.SET_OPTIONAL_CODECS";
     public static final String ACTION_CODEC_STATE = "xyz.melodylsp.codec.action.CODEC_STATE";
 
     public static final String EXTRA_TOKEN = "token";
@@ -33,6 +35,10 @@ public final class CodecIpc {
     public static final String EXTRA_CODEC_SPECIFIC_4 = "codec_specific_4";
     public static final String EXTRA_SELECTABLE_SPECIFIC_1 = "selectable_specific_1";
     public static final String EXTRA_SELECTABLE_SAMPLE_RATE_MASK = "selectable_sample_rate_mask";
+    public static final String EXTRA_SELECTABLE_CODEC_TYPES = "selectable_codec_types";
+    public static final String EXTRA_OPTIONAL_CODECS_SUPPORTED = "optional_codecs_supported";
+    public static final String EXTRA_OPTIONAL_CODECS_ENABLED = "optional_codecs_enabled";
+    public static final String EXTRA_OPTIONAL_CODECS_ENABLE = "optional_codecs_enable";
     public static final String EXTRA_READ_TIMESTAMP_MS = "read_timestamp_ms";
 
     public static final String TOKEN = "mlcdc-codec-v1";

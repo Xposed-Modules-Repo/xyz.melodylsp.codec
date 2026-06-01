@@ -30,6 +30,12 @@ public final class CodecSnapshot implements Parcelable {
     public final long[] selectableCodecSpecific1;
     /** Selectable sample-rate bitmask for the active codec ({@link BluetoothCodecConfig} bits). */
     public final int selectableSampleRateMask;
+    /** Codec types exposed by {@code getCodecsSelectableCapabilities()}, in platform order. */
+    public final int[] selectableCodecTypes;
+    /** {@code BluetoothA2dp.isOptionalCodecsSupported}: 1 supported, 0 unsupported, -1 unknown. */
+    public final int optionalCodecsSupported;
+    /** {@code BluetoothA2dp.isOptionalCodecsEnabled}: 1 high-quality, 0 standard, -1 unknown. */
+    public final int optionalCodecsEnabled;
 
     public final long readTimestampMs;
 
@@ -46,6 +52,40 @@ public final class CodecSnapshot implements Parcelable {
             long[] selectableCodecSpecific1,
             int selectableSampleRateMask,
             long readTimestampMs) {
+        this(
+                mac,
+                activeCodecType,
+                activeSampleRate,
+                activeBitsPerSample,
+                activeChannelMode,
+                activeCodecSpecific1,
+                activeCodecSpecific2,
+                activeCodecSpecific3,
+                activeCodecSpecific4,
+                selectableCodecSpecific1,
+                selectableSampleRateMask,
+                new int[0],
+                -1,
+                -1,
+                readTimestampMs);
+    }
+
+    public CodecSnapshot(
+            String mac,
+            int activeCodecType,
+            int activeSampleRate,
+            int activeBitsPerSample,
+            int activeChannelMode,
+            long activeCodecSpecific1,
+            long activeCodecSpecific2,
+            long activeCodecSpecific3,
+            long activeCodecSpecific4,
+            long[] selectableCodecSpecific1,
+            int selectableSampleRateMask,
+            int[] selectableCodecTypes,
+            int optionalCodecsSupported,
+            int optionalCodecsEnabled,
+            long readTimestampMs) {
         this.mac = mac;
         this.activeCodecType = activeCodecType;
         this.activeSampleRate = activeSampleRate;
@@ -59,6 +99,11 @@ public final class CodecSnapshot implements Parcelable {
                 ? new long[0]
                 : selectableCodecSpecific1.clone();
         this.selectableSampleRateMask = selectableSampleRateMask;
+        this.selectableCodecTypes = selectableCodecTypes == null
+                ? new int[0]
+                : selectableCodecTypes.clone();
+        this.optionalCodecsSupported = optionalCodecsSupported;
+        this.optionalCodecsEnabled = optionalCodecsEnabled;
         this.readTimestampMs = readTimestampMs;
     }
 
@@ -74,6 +119,38 @@ public final class CodecSnapshot implements Parcelable {
             long activeCodecSpecific4,
             long[] selectableCodecSpecific1,
             int selectableSampleRateMask) {
+        return now(
+                mac,
+                activeCodecType,
+                activeSampleRate,
+                activeBitsPerSample,
+                activeChannelMode,
+                activeCodecSpecific1,
+                activeCodecSpecific2,
+                activeCodecSpecific3,
+                activeCodecSpecific4,
+                selectableCodecSpecific1,
+                selectableSampleRateMask,
+                new int[0],
+                -1,
+                -1);
+    }
+
+    public static CodecSnapshot now(
+            String mac,
+            int activeCodecType,
+            int activeSampleRate,
+            int activeBitsPerSample,
+            int activeChannelMode,
+            long activeCodecSpecific1,
+            long activeCodecSpecific2,
+            long activeCodecSpecific3,
+            long activeCodecSpecific4,
+            long[] selectableCodecSpecific1,
+            int selectableSampleRateMask,
+            int[] selectableCodecTypes,
+            int optionalCodecsSupported,
+            int optionalCodecsEnabled) {
         return new CodecSnapshot(
                 mac,
                 activeCodecType,
@@ -86,7 +163,20 @@ public final class CodecSnapshot implements Parcelable {
                 activeCodecSpecific4,
                 selectableCodecSpecific1,
                 selectableSampleRateMask,
+                selectableCodecTypes,
+                optionalCodecsSupported,
+                optionalCodecsEnabled,
                 SystemClock.elapsedRealtime());
+    }
+
+    public boolean supportsOptionalCodecs() {
+        return optionalCodecsSupported == 1;
+    }
+
+    public boolean optionalCodecsEnabled() {
+        if (optionalCodecsEnabled == 1) return true;
+        if (optionalCodecsEnabled == 0) return false;
+        return activeCodecType != 0;
     }
 
     /**
@@ -151,6 +241,9 @@ public final class CodecSnapshot implements Parcelable {
         dest.writeLong(activeCodecSpecific4);
         dest.writeLongArray(selectableCodecSpecific1);
         dest.writeInt(selectableSampleRateMask);
+        dest.writeIntArray(selectableCodecTypes);
+        dest.writeInt(optionalCodecsSupported);
+        dest.writeInt(optionalCodecsEnabled);
         dest.writeLong(readTimestampMs);
     }
 
@@ -169,6 +262,9 @@ public final class CodecSnapshot implements Parcelable {
                     in.readLong(),
                     in.createLongArray(),
                     in.readInt(),
+                    in.createIntArray(),
+                    in.readInt(),
+                    in.readInt(),
                     in.readLong());
         }
 
@@ -181,8 +277,10 @@ public final class CodecSnapshot implements Parcelable {
     @Override
     public String toString() {
         return String.format(Locale.ROOT,
-                "CodecSnapshot{mac=%s codec=0x%x rate=0x%x specific1=%d selSpec1=%s selRateMask=0x%x ts=%d}",
+                "CodecSnapshot{mac=%s codec=0x%x rate=0x%x specific1=%d selSpec1=%s selCodec=%s selRateMask=0x%x optional=%d/%d ts=%d}",
                 mac, activeCodecType, activeSampleRate, activeCodecSpecific1,
-                Arrays.toString(selectableCodecSpecific1), selectableSampleRateMask, readTimestampMs);
+                Arrays.toString(selectableCodecSpecific1), Arrays.toString(selectableCodecTypes),
+                selectableSampleRateMask, optionalCodecsSupported, optionalCodecsEnabled,
+                readTimestampMs);
     }
 }

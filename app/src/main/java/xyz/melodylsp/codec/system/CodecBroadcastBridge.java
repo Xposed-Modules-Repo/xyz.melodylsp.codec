@@ -33,6 +33,7 @@ public final class CodecBroadcastBridge {
         IntentFilter filter = new IntentFilter();
         filter.addAction(CodecIpc.ACTION_QUERY_CODEC);
         filter.addAction(CodecIpc.ACTION_SET_CODEC);
+        filter.addAction(CodecIpc.ACTION_SET_OPTIONAL_CODECS);
         try {
             context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
         } catch (Throwable t) {
@@ -69,6 +70,16 @@ public final class CodecBroadcastBridge {
                         : null;
                 reply(requestId, mac, snapshot, result == CodecRequest.RESULT_OK, result);
                 MLog.event("codec.bt.set", "result", result, "mac", mac);
+            } else if (CodecIpc.ACTION_SET_OPTIONAL_CODECS.equals(action)) {
+                boolean enable = intent.getBooleanExtra(
+                        CodecIpc.EXTRA_OPTIONAL_CODECS_ENABLE, false);
+                int result = service.setOptionalCodecsUnchecked(mac, enable);
+                CodecSnapshot snapshot = result == CodecRequest.RESULT_OK
+                        ? service.getStatusUnchecked(mac)
+                        : null;
+                reply(requestId, mac, snapshot, result == CodecRequest.RESULT_OK, result);
+                MLog.event("codec.bt.set_optional", "result", result,
+                        "enable", enable, "mac", mac);
             }
         } catch (Throwable t) {
             MLog.e("codec bluetooth request failed", t);
@@ -124,6 +135,11 @@ public final class CodecBroadcastBridge {
         intent.putExtra(CodecIpc.EXTRA_SELECTABLE_SPECIFIC_1, snapshot.selectableCodecSpecific1);
         intent.putExtra(CodecIpc.EXTRA_SELECTABLE_SAMPLE_RATE_MASK,
                 snapshot.selectableSampleRateMask);
+        intent.putExtra(CodecIpc.EXTRA_SELECTABLE_CODEC_TYPES, snapshot.selectableCodecTypes);
+        intent.putExtra(CodecIpc.EXTRA_OPTIONAL_CODECS_SUPPORTED,
+                snapshot.optionalCodecsSupported);
+        intent.putExtra(CodecIpc.EXTRA_OPTIONAL_CODECS_ENABLED,
+                snapshot.optionalCodecsEnabled);
         intent.putExtra(CodecIpc.EXTRA_READ_TIMESTAMP_MS, snapshot.readTimestampMs);
     }
 }

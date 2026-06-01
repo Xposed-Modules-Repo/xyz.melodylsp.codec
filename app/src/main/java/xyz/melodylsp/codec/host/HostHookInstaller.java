@@ -93,6 +93,7 @@ public final class HostHookInstaller {
     private static final String KEY_EQUALIZER_ITEM = "EqualizerItem";
     private static final String KEY_CODEC_HEADER = "melody_codec_lsp_header";
     private static final String KEY_CODEC_CATEGORY = "melody_codec_lsp_category";
+    private static final String KEY_CODEC_MODE = "melody_codec_lsp_codec_mode";
     private static final String KEY_CODEC_QUALITY = "melody_codec_lsp_quality";
     private static final String KEY_NOISE_SWITCH = "pref_noise_switch";
     private static final String KEY_NOISE_SWITCH_CATEGORY = "pref_noise_switch_category";
@@ -355,6 +356,7 @@ public final class HostHookInstaller {
     private static boolean hasCodecMarker(Object screen) {
         return PrefRef.findPreference(screen, KEY_CODEC_HEADER) != null
                 || PrefRef.findPreference(screen, KEY_CODEC_CATEGORY) != null
+                || PrefRef.findPreference(screen, KEY_CODEC_MODE) != null
                 || PrefRef.findPreference(screen, KEY_CODEC_QUALITY) != null;
     }
 
@@ -411,7 +413,7 @@ public final class HostHookInstaller {
         if (parent == null) parent = screen;
         int anchorOrder = PrefRef.getOrder(anchor);
         int targetOrder = anchorOrder + 1;
-        shiftPreferenceOrders(parent, targetOrder, +4);
+        shiftPreferenceOrders(parent, targetOrder, +6);
 
         String mac = resolveMacFromActivityIntent(fragment);
         if (mac == null) {
@@ -441,7 +443,7 @@ public final class HostHookInstaller {
         if (parent == null) parent = screen;
         int anchorOrder = PrefRef.getOrder(anchor);
         int targetOrder = anchorOrder + 1;
-        shiftPreferenceOrders(parent, targetOrder, +4);
+        shiftPreferenceOrders(parent, targetOrder, +6);
 
         String mac = resolveMacFromActivityIntent(fragment);
         if (mac == null) {
@@ -514,7 +516,9 @@ public final class HostHookInstaller {
                 /* wrapInCategory= */ true, /* includeRemember= */ false,
                 /* includeLeAudio= */ true);
         if (prefs == null) return false;
-        setCategoryTopMarginZero(prefs.category);
+        if (!insertAfterAnchor) {
+            setCategoryTopMarginZero(prefs.category);
+        }
         // Add bottom padding to the RecyclerView so the last host row ("耳机设置") is not
         // clipped by overscroll-bounce after our injection extends the content height.
         addRecyclerBottomPadding(fragment, dpToPx(themedContext, 32));

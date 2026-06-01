@@ -109,6 +109,20 @@ public final class CodecBlockBuilder {
             firstChildOrder++;
         }
 
+        Object codecMode = newOf(context, COUI_PREFERENCE, ANDX_PREFERENCE);
+        if (codecMode != null) {
+            cloneVisualStyleFrom(codecMode, prefTemplate);
+            PrefRef.setKey(codecMode, "melody_codec_lsp_codec_mode");
+            PrefRef.setTitle(codecMode, Strings.CODEC_MODE_OPTION_TITLE);
+            PrefRef.setVisible(codecMode, false);
+            PrefRef.setIconSpaceReserved(codecMode, false);
+            PrefRef.setPersistent(codecMode, false);
+            PrefRef.setWidgetLayoutResource(codecMode, 0);
+            PrefRef.setOrder(codecMode, firstChildOrder);
+            PrefRef.addPreference(insertionParent, codecMode);
+            firstChildOrder++;
+        }
+
         // Plain Preference rows for quality and sample rate: their click handlers will pop a
         // hand-rolled AlertDialog instead of going through ListPreference's R8-stripped path.
         Object quality = newOf(context, COUI_PREFERENCE, ANDX_PREFERENCE);
@@ -176,6 +190,7 @@ public final class CodecBlockBuilder {
         // card); fall back to whichever child still rendered if header construction failed.
         if (header != null) codecDisplay = header;
         else if (category != null) codecDisplay = category;
+        else if (codecMode != null) codecDisplay = codecMode;
         else if (quality != null) codecDisplay = quality;
         else if (sampleRate != null) codecDisplay = sampleRate;
         else codecDisplay = remember;
@@ -183,7 +198,7 @@ public final class CodecBlockBuilder {
         MLog.event("codec_block.inserted", "order", order,
                 "wrapped", wrapInCategory, "remember", includeRemember, "leAudio", includeLeAudio);
         return new CodecPreferences(
-                context, category, codecDisplay, quality, sampleRate, remember, leAudio);
+                context, category, codecDisplay, codecMode, quality, sampleRate, remember, leAudio);
     }
 
     /** Backwards-compatible overload: wrap in category, include remember toggle. */

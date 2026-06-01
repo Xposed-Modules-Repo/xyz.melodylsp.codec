@@ -9,7 +9,9 @@ import android.os.RemoteCallbackList;
 import android.os.RemoteException;
 
 import java.lang.reflect.Method;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 import xyz.melodylsp.codec.bridge.CodecRequest;
 import xyz.melodylsp.codec.bridge.CodecSnapshot;
@@ -26,6 +28,9 @@ public final class CodecBridgeService extends ICodecBridge.Stub {
 
     private static final String SERVICE_NAME = "melody_codec_bridge";
     private static final String MELODY_PKG = "com.oplus.melody";
+    private static final int OPTIONAL_CODECS_PREF_DISABLED = 0;
+    private static final int OPTIONAL_CODECS_PREF_ENABLED = 1;
+    private static final int OPTIONAL_CODECS_UNKNOWN = -1;
 
     private final Object a2dpService;
     private final Class<?> a2dpClass;
@@ -71,6 +76,14 @@ public final class CodecBridgeService extends ICodecBridge.Stub {
         return setCodecUnchecked(request);
     }
 
+    @Override
+    public int setOptionalCodecs(String mac, boolean enable) throws RemoteException {
+        if (!isMelodyCaller()) {
+            return CodecRequest.RESULT_DENIED;
+        }
+        return setOptionalCodecsUnchecked(mac, enable);
+    }
+
     int setCodecUnchecked(CodecRequest request) {
         if (request == null || request.mac == null) return CodecRequest.RESULT_INVALID;
         try {
@@ -82,6 +95,24 @@ public final class CodecBridgeService extends ICodecBridge.Stub {
             return CodecRequest.RESULT_OK;
         } catch (Throwable t) {
             MLog.w("bridge.setCodec failed", t);
+            return CodecRequest.RESULT_ERROR;
+        }
+    }
+
+    int setOptionalCodecsUnchecked(String mac, boolean enable) {
+        if (mac == null || mac.isEmpty()) return CodecRequest.RESULT_INVALID;
+        try {
+            BluetoothDevice device = BluetoothAdapter.getDefaultAdapter().getRemoteDevice(mac);
+            boolean wrotePreference = invokeOptionalCodecPreference(device, enable);
+            boolean toggled = invokeOptionalCodecToggle(device, enable);
+            if (!wrotePreference && !toggled) {
+                return CodecRequest.RESULT_ERROR;
+            }
+            MLog.event("bridge.setOptionalCodecs", "mac", mac, "enable", enable,
+                    "pref", wrotePreference, "toggle", toggled);
+            return CodecRequest.RESULT_OK;
+        } catch (Throwable t) {
+            MLog.w("bridge.setOptionalCodecs failed", t);
             return CodecRequest.RESULT_ERROR;
         }
     }
@@ -150,6 +181,7 @@ public final class CodecBridgeService extends ICodecBridge.Stub {
 
         int sampleRateMask = rate;
         long[] selSpecific1 = new long[0];
+        int[] selectableCodecTypes = extractSelectableCodecTypes(selectableArr);
         if (selectableArr instanceof List<?>) {
             for (Object cap : (List<?>) selectableArr) {
                 int t = (int) cap.getClass().getMethod("getCodecType").invoke(cap);
@@ -180,7 +212,75 @@ public final class CodecBridgeService extends ICodecBridge.Stub {
         }
         return CodecSnapshot.now(
                 mac, activeCodec, rate, bits, channel, s1, s2, s3, s4,
-                selSpecific1, sampleRateMask);
+                selSpecific1, sampleRateMask,
+                selectableCodecTypes,
+                readOptionalCodecsSupported(mac),
+                readOptionalCodecsEnabled(mac));
+    }
+
+    private int[] extractSelectableCodecTypes(Object selectableArr) {
+        if (!(selectableArr instanceof List<?>)) return new int[0];
+        Set<Integer> seen = new LinkedHashSet<>();
+        for (Object cap : (List<?>) selectableArr) {
+            if (cap == null) continue;
+            try {
+                seen.add((Integer) cap.getClass().getMethod("getCodecType").invoke(cap));
+            } catch (Throwable ignored) {
+            }
+        }
+        int[] out = new int[seen.size()];
+        int i = 0;
+        for (Integer value : seen) {
+            out[i++] = value != null ? value : 0;
+        }
+        return out;
+    }
+
+    private int readOptionalCodecsSupported(String mac) {
+        return readOptionalCodecInt(mac, "isOptionalCodecsSupported");
+    }
+
+    private int readOptionalCodecsEnabled(String mac) {
+        return readOptionalCodecInt(mac, "isOptionalCodecsEnabled");
+    }
+
+    private int readOptionalCodecInt(String mac, String methodName) {
+        if (mac == null || mac.isEmpty()) return OPTIONAL_CODECS_UNKNOWN;
+        try {
+            BluetoothDevice device = BluetoothAdapter.getDefaultAdapter().getRemoteDevice(mac);
+            Method m = a2dpClass.getMethod(methodName, BluetoothDevice.class);
+            Object out = m.invoke(a2dpService, device);
+            if (out instanceof Number) return ((Number) out).intValue();
+            if (out instanceof Boolean) return (Boolean) out ? 1 : 0;
+        } catch (Throwable t) {
+            MLog.w("bridge optional codec read failed: " + methodName, t);
+        }
+        return OPTIONAL_CODECS_UNKNOWN;
+    }
+
+    private boolean invokeOptionalCodecPreference(BluetoothDevice device, boolean enable) {
+        try {
+            Method m = a2dpClass.getMethod(
+                    "setOptionalCodecsEnabled", BluetoothDevice.class, int.class);
+            m.invoke(a2dpService, device,
+                    enable ? OPTIONAL_CODECS_PREF_ENABLED : OPTIONAL_CODECS_PREF_DISABLED);
+            return true;
+        } catch (Throwable t) {
+            MLog.w("bridge.setOptionalCodecsEnabled failed", t);
+            return false;
+        }
+    }
+
+    private boolean invokeOptionalCodecToggle(BluetoothDevice device, boolean enable) {
+        String name = enable ? "enableOptionalCodecs" : "disableOptionalCodecs";
+        try {
+            Method m = a2dpClass.getMethod(name, BluetoothDevice.class);
+            m.invoke(a2dpService, device);
+            return true;
+        } catch (Throwable t) {
+            MLog.w("bridge." + name + " failed", t);
+            return false;
+        }
     }
 
     private Object newCodecConfig(Class<?> cfgCls, CodecRequest req) throws Exception {
