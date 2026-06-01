@@ -15,7 +15,9 @@ import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.TextUtils;
 import android.util.DisplayMetrics;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -1057,8 +1059,16 @@ public final class CodecController {
 
             TextView title = new TextView(popupContext);
             title.setText(entries[i]);
-            title.setTextSize(17);
-            title.setSingleLine(false);
+            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+            title.setSingleLine(true);
+            title.setHorizontallyScrolling(false);
+            title.setMaxLines(1);
+            title.setEllipsize(TextUtils.TruncateAt.END);
+            title.setIncludeFontPadding(false);
+            if (Build.VERSION.SDK_INT >= 26) {
+                title.setAutoSizeTextTypeUniformWithConfiguration(
+                        13, 17, 1, TypedValue.COMPLEX_UNIT_SP);
+            }
             title.setGravity(Gravity.CENTER_VERTICAL);
             title.setTextColor(i == checked ? blue : textColor);
             row.addView(title, new LinearLayout.LayoutParams(
@@ -1093,7 +1103,8 @@ public final class CodecController {
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT));
 
         DisplayMetrics metrics = popupContext.getResources().getDisplayMetrics();
-        int contentWidth = Math.min(metrics.widthPixels - dp(popupContext, 48), dp(popupContext, 176));
+        int contentWidth = Math.min(metrics.widthPixels - dp(popupContext, 48),
+                dp(popupContext, 232));
         int width = contentWidth + shadowPad * 2;
         PopupWindow popup = new PopupWindow(
                 shell, width, LinearLayout.LayoutParams.WRAP_CONTENT, true);
@@ -1110,6 +1121,8 @@ public final class CodecController {
         if (anchor != null) {
             int[] loc = new int[2];
             anchor.getLocationInWindow(loc);
+            int anchorRight = loc[0] + Math.max(anchor.getWidth(), dp(popupContext, 280));
+            x = anchorRight - width + shadowPad;
             x = Math.max(dp(popupContext, 16),
                     Math.min(x, metrics.widthPixels - width - dp(popupContext, 16)));
             y = loc[1] - dp(popupContext, 8) - shadowPad;
