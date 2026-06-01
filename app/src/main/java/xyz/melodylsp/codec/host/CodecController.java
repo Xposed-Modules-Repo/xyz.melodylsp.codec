@@ -1103,7 +1103,8 @@ public final class CodecController {
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT));
 
         DisplayMetrics metrics = popupContext.getResources().getDisplayMetrics();
-        int contentWidth = Math.min(metrics.widthPixels - dp(popupContext, 48),
+        int edgeMargin = popupEdgeMargin(popupContext, metrics);
+        int contentWidth = Math.min(metrics.widthPixels - edgeMargin * 2 - shadowPad * 2,
                 dp(popupContext, 208));
         int width = contentWidth + shadowPad * 2;
         PopupWindow popup = new PopupWindow(
@@ -1116,15 +1117,15 @@ public final class CodecController {
         if (Build.VERSION.SDK_INT >= 21) {
             popup.setElevation(dp(popupContext, 14));
         }
-        int x = metrics.widthPixels - width - dp(popupContext, 40);
+        int x = metrics.widthPixels - edgeMargin - width + shadowPad;
         int y = Math.round(metrics.heightPixels * 0.38f);
         if (anchor != null) {
             int[] loc = new int[2];
             anchor.getLocationInWindow(loc);
             int boundaryRight = findPopupRightBoundary(anchor, popupContext, metrics);
             x = boundaryRight - width + shadowPad;
-            x = Math.max(dp(popupContext, 16),
-                    Math.min(x, metrics.widthPixels - width - dp(popupContext, 16)));
+            x = Math.max(edgeMargin,
+                    Math.min(x, metrics.widthPixels - edgeMargin - width + shadowPad));
             y = loc[1] - dp(popupContext, 8) - shadowPad;
         }
         int popupHeightEstimate = entries.length * rowHeight
@@ -1137,28 +1138,43 @@ public final class CodecController {
     }
 
     private static int findPopupRightBoundary(View anchor, Context context, DisplayMetrics metrics) {
-        int fallbackRight = metrics.widthPixels - dp(context, 40);
+        int edgeMargin = popupEdgeMargin(context, metrics);
+        int fallbackRight = metrics.widthPixels - edgeMargin;
         if (anchor == null) return fallbackRight;
         int[] loc = new int[2];
         int bestRight = 0;
+        int bestDistance = Integer.MAX_VALUE;
         View cur = anchor;
-        int minCardWidth = Math.round(metrics.widthPixels * 0.62f);
-        int maxCardWidth = metrics.widthPixels - dp(context, 24);
+        int minCardWidth = Math.round(metrics.widthPixels * 0.55f);
+        int tolerance = dp(context, 12);
         while (cur != null) {
             int width = cur.getWidth();
-            if (width >= minCardWidth && width <= maxCardWidth) {
-                cur.getLocationInWindow(loc);
-                int right = loc[0] + width;
-                if (right > bestRight && right < metrics.widthPixels - dp(context, 8)) {
-                    bestRight = right;
-                }
+            cur.getLocationInWindow(loc);
+            int right = loc[0] + width;
+            int distance = Math.abs(right - fallbackRight);
+            if (width >= minCardWidth
+                    && distance <= tolerance
+                    && distance < bestDistance) {
+                bestRight = right;
+                bestDistance = distance;
             }
             Object parent = cur.getParent();
             cur = parent instanceof View ? (View) parent : null;
         }
         if (bestRight > 0) return bestRight;
-        anchor.getLocationInWindow(loc);
-        return Math.min(fallbackRight, loc[0] + anchor.getWidth());
+        return fallbackRight;
+    }
+
+    private static int popupEdgeMargin(Context context, DisplayMetrics metrics) {
+        float density = metrics.density > 0f
+                ? metrics.density
+                : context.getResources().getDisplayMetrics().density;
+        if (density <= 0f) density = 1f;
+        int widthDp = Math.round(metrics.widthPixels / density);
+        int heightDp = Math.round(metrics.heightPixels / density);
+        if (widthDp >= 840 && heightDp >= 480) return dp(context, 40);
+        if (widthDp >= 600) return dp(context, 24);
+        return dp(context, 16);
     }
 
     private static Activity resolveLiveActivity(Subscription sub) {
