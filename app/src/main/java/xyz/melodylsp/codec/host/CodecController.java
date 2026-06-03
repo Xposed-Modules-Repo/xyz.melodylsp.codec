@@ -1042,7 +1042,7 @@ public final class CodecController {
 
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(Color.WHITE);
-        bg.setCornerRadius(dp(popupContext, 20));
+        bg.setCornerRadius(dp(popupContext, 12));
         bg.setStroke(Math.max(1, dp(popupContext, 1)), Color.argb(20, 0, 0, 0));
         list.setBackground(bg);
         if (Build.VERSION.SDK_INT >= 21) {
