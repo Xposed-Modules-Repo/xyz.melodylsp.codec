@@ -97,6 +97,7 @@ public final class CodecController {
     private final xyz.melodylsp.codec.leaudio.LeAudioManager leAudioManager;
     private final Set<String> classicRestorePending = new LinkedHashSet<>();
     private final Map<String, Long> classicRestoreDeadlines = new HashMap<>();
+    private final Map<String, CodecSnapshot> lastHighQualitySnapshots = new HashMap<>();
 
     public interface SurfaceRescanRequester {
         void request(String reason);
@@ -1612,6 +1613,9 @@ public final class CodecController {
                     refreshSnapshotDelayed(sub, 3600L);
                     break;
                 case TIMEOUT_ROLLED_BACK:
+                    if (enable && applyHighQualityCodecFallback(sub, result.rollbackSnapshot)) {
+                        return;
+                    }
                     Toast.makeText(context, Strings.TOAST_APPLY_FAILED, Toast.LENGTH_SHORT).show();
                     if (result.rollbackSnapshot != null) {
                         publish(result.rollbackSnapshot, sub);
@@ -1621,11 +1625,57 @@ public final class CodecController {
                     break;
                 case FAILED:
                 default:
+                    if (enable && applyHighQualityCodecFallback(sub, lastSnapshot.get())) {
+                        return;
+                    }
                     Toast.makeText(context, Strings.TOAST_APPLY_FAILED, Toast.LENGTH_SHORT).show();
                     refreshSnapshot(sub);
                     break;
             }
         }));
+    }
+
+    private boolean applyHighQualityCodecFallback(Subscription sub, CodecSnapshot live) {
+        CodecRequest request = buildHighQualityCodecRequest(sub, live);
+        if (request == null) return false;
+        MLog.event("write.high_quality.fallback", "request", request);
+        setCodecModeStatus(sub, Strings.STATE_SWITCHING_CODEC);
+        applyWrite(sub, request);
+        return true;
+    }
+
+    private CodecRequest buildHighQualityCodecRequest(Subscription sub, CodecSnapshot live) {
+        if (sub == null || live == null || live.mac == null) return null;
+        int codecType = -1;
+        long specific1 = 0L;
+        long specific2 = 0L;
+        long specific3 = 0L;
+        long specific4 = 0L;
+        int sampleRate = 0;
+        int bitsPerSample = 0;
+        int channelMode = 0;
+
+        CodecSnapshot remembered = lastHighQualitySnapshots.get(sub.mac);
+        int rememberedCodec = resolveSelectableCodecType(live, remembered);
+        if (rememberedCodec >= 0) {
+            codecType = rememberedCodec;
+            specific1 = remembered.activeCodecSpecific1;
+        } else {
+            codecType = bestSelectableHighQualityCodec(live.selectableCodecTypes);
+            if (codecType < 0) return null;
+            specific1 = defaultHighQualitySpecific1(codecType);
+        }
+
+        return CodecRequest.fromActive(live)
+                .codecType(codecType)
+                .codecSpecific1(specific1)
+                .codecSpecific2(specific2)
+                .codecSpecific3(specific3)
+                .codecSpecific4(specific4)
+                .sampleRate(sampleRate)
+                .bitsPerSample(bitsPerSample)
+                .channelMode(channelMode)
+                .build();
     }
 
     private void applyCodecTypeWrite(Subscription sub, CodecSnapshot snapshot, int codecType) {
@@ -1675,6 +1725,7 @@ public final class CodecController {
     private void publish(CodecSnapshot snapshot, Subscription sub) {
         if (snapshot != null) {
             lastSnapshot.set(snapshot);
+            rememberHighQualitySnapshot(snapshot);
         }
         if (snapshot == null) {
             lastSnapshot.set(null);
@@ -1688,6 +1739,7 @@ public final class CodecController {
         if (snapshot == null || snapshot.mac == null) return;
         mainHandler.post(() -> {
             lastSnapshot.set(snapshot);
+            rememberHighQualitySnapshot(snapshot);
             for (Subscription sub : subscriptions.values()) {
                 if (snapshot.mac.equals(sub.mac)) {
                     sub.connected = Boolean.TRUE;
@@ -1963,6 +2015,35 @@ public final class CodecController {
         return -1;
     }
 
+    private static int resolveSelectableCodecType(CodecSnapshot live, CodecSnapshot remembered) {
+        if (live == null || remembered == null) return -1;
+        if (remembered.activeCodecType == CodecLabelTable.CODEC_SBC
+                || remembered.activeCodecType == CodecLabelTable.CODEC_AAC) {
+            return -1;
+        }
+        int[] types = live.selectableCodecTypes;
+        if (types == null) return -1;
+        for (int type : types) {
+            if (type == remembered.activeCodecType) return type;
+        }
+        if (CodecLabelTable.isLhdc(remembered.activeCodecType)) {
+            for (int type : types) {
+                if (CodecLabelTable.isLhdc(type)) return type;
+            }
+        }
+        return -1;
+    }
+
+    private static long defaultHighQualitySpecific1(int codecType) {
+        if (CodecLabelTable.isLhdc(codecType)) {
+            return 0x8000L | CodecLabelTable.LHDC_QUALITY_BALANCED;
+        }
+        if (codecType == CodecLabelTable.CODEC_LDAC) {
+            return CodecLabelTable.LDAC_QUALITY_MID;
+        }
+        return 0L;
+    }
+
     private static int linkedSampleRateForQuality(CodecSnapshot snapshot, long specific1) {
         if (snapshot == null || !CodecLabelTable.isLhdc(snapshot.activeCodecType)) {
             return snapshot != null ? snapshot.activeSampleRate : SAMPLE_RATE_48000_BIT;
@@ -2021,6 +2102,15 @@ public final class CodecController {
     private static boolean isHighQualityRate(int sampleRateBit) {
         return sampleRateBit == SAMPLE_RATE_96000_BIT
                 || sampleRateBit == SAMPLE_RATE_192000_BIT;
+    }
+
+    private void rememberHighQualitySnapshot(CodecSnapshot snapshot) {
+        if (snapshot == null || snapshot.mac == null) return;
+        if (snapshot.activeCodecType == CodecLabelTable.CODEC_SBC
+                || snapshot.activeCodecType == CodecLabelTable.CODEC_AAC) {
+            return;
+        }
+        lastHighQualitySnapshots.put(snapshot.mac, snapshot);
     }
 
     private static int sampleRateFallbackMask(int codecType, int activeRateBit) {

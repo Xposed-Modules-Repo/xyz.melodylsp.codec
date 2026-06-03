@@ -709,12 +709,16 @@ public final class CodecBridgeClient {
 
     private static boolean optionalMatches(CodecSnapshot snapshot, boolean enable) {
         if (snapshot == null) return false;
-        if (snapshot.optionalCodecsEnabled == 1 || snapshot.optionalCodecsEnabled == 0) {
-            return enable ? snapshot.optionalCodecsEnabled == 1 : snapshot.optionalCodecsEnabled == 0;
+        if (enable) {
+            if (snapshot.optionalCodecsEnabled == 0) return false;
+            return snapshot.activeCodecType != CodecLabelTable.CODEC_SBC
+                    && snapshot.activeCodecType != CodecLabelTable.CODEC_AAC;
         }
-        return enable
-                ? snapshot.activeCodecType != CodecLabelTable.CODEC_SBC
-                : snapshot.activeCodecType == CodecLabelTable.CODEC_SBC;
+        if (snapshot.activeCodecType == CodecLabelTable.CODEC_SBC) {
+            return true;
+        }
+        return snapshot.optionalCodecsEnabled == 0
+                && snapshot.activeCodecType != CodecLabelTable.CODEC_AAC;
     }
 
     private static Throwable unwrap(Throwable t) {
