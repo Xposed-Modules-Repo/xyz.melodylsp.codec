@@ -1150,31 +1150,23 @@ public final class CodecController {
             super(context);
             this.cornerRadius = cornerRadius;
             this.density = Math.max(1f, context.getResources().getDisplayMetrics().density);
+            shadowPaint.setColor(Color.WHITE);
+            shadowPaint.setStyle(Paint.Style.FILL);
+            shadowPaint.setShadowLayer(20f * density, 0f, 5f * density,
+                    Color.argb(30, 0, 0, 0));
+            setLayerType(View.LAYER_TYPE_SOFTWARE, null);
             setWillNotDraw(false);
         }
 
         @Override
         protected void onDraw(Canvas canvas) {
-            drawShadowLayer(canvas, 27f, 5f, 3);
-            drawShadowLayer(canvas, 22f, 4f, 4);
-            drawShadowLayer(canvas, 16f, 3f, 5);
-            drawShadowLayer(canvas, 10f, 2f, 6);
-            drawShadowLayer(canvas, 5f, 1f, 7);
-            drawShadowLayer(canvas, 2f, 0f, 5);
-            super.onDraw(canvas);
-        }
-
-        private void drawShadowLayer(Canvas canvas, float spreadDp, float dyDp, int alpha) {
-            float spread = spreadDp * density;
-            float dy = dyDp * density;
             shadowRect.set(
-                    getPaddingLeft() - spread,
-                    getPaddingTop() - spread + dy,
-                    getWidth() - getPaddingRight() + spread,
-                    getHeight() - getPaddingBottom() + spread + dy);
-            shadowPaint.setColor(Color.argb(alpha, 0, 0, 0));
-            canvas.drawRoundRect(shadowRect,
-                    cornerRadius + spread, cornerRadius + spread, shadowPaint);
+                    getPaddingLeft(),
+                    getPaddingTop(),
+                    getWidth() - getPaddingRight(),
+                    getHeight() - getPaddingBottom());
+            canvas.drawRoundRect(shadowRect, cornerRadius, cornerRadius, shadowPaint);
+            super.onDraw(canvas);
         }
     }
 
