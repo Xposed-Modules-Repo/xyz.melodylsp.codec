@@ -9,9 +9,7 @@ import android.os.RemoteCallbackList;
 import android.os.RemoteException;
 
 import java.lang.reflect.Method;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
 
 import xyz.melodylsp.codec.bridge.CodecRequest;
 import xyz.melodylsp.codec.bridge.CodecSnapshot;
@@ -182,6 +180,14 @@ public final class CodecBridgeService extends ICodecBridge.Stub {
         int sampleRateMask = rate;
         long[] selSpecific1 = new long[0];
         int[] selectableCodecTypes = extractSelectableCodecTypes(selectableArr);
+        int[] selectableCodecSampleRates =
+                extractSelectableCodecIntFields(selectableArr, "getSampleRate");
+        int[] selectableCodecBitsPerSample =
+                extractSelectableCodecIntFields(selectableArr, "getBitsPerSample");
+        int[] selectableCodecChannelModes =
+                extractSelectableCodecIntFields(selectableArr, "getChannelMode");
+        long[] selectableCodecSpecific1Values =
+                extractSelectableCodecLongFields(selectableArr, "getCodecSpecific1");
         if (selectableArr instanceof List<?>) {
             for (Object cap : (List<?>) selectableArr) {
                 int t = (int) cap.getClass().getMethod("getCodecType").invoke(cap);
@@ -214,26 +220,65 @@ public final class CodecBridgeService extends ICodecBridge.Stub {
                 mac, activeCodec, rate, bits, channel, s1, s2, s3, s4,
                 selSpecific1, sampleRateMask,
                 selectableCodecTypes,
+                selectableCodecSampleRates,
+                selectableCodecBitsPerSample,
+                selectableCodecChannelModes,
+                selectableCodecSpecific1Values,
                 readOptionalCodecsSupported(mac),
                 readOptionalCodecsEnabled(mac));
     }
 
     private int[] extractSelectableCodecTypes(Object selectableArr) {
         if (!(selectableArr instanceof List<?>)) return new int[0];
-        Set<Integer> seen = new LinkedHashSet<>();
-        for (Object cap : (List<?>) selectableArr) {
-            if (cap == null) continue;
-            try {
-                seen.add((Integer) cap.getClass().getMethod("getCodecType").invoke(cap));
-            } catch (Throwable ignored) {
-            }
-        }
-        int[] out = new int[seen.size()];
+        List<?> list = (List<?>) selectableArr;
+        int[] out = new int[list.size()];
         int i = 0;
-        for (Integer value : seen) {
-            out[i++] = value != null ? value : 0;
+        for (Object cap : list) {
+            out[i++] = readCodecIntField(cap, "getCodecType");
         }
         return out;
+    }
+
+    private int[] extractSelectableCodecIntFields(Object selectableArr, String methodName) {
+        if (!(selectableArr instanceof List<?>)) return new int[0];
+        List<?> list = (List<?>) selectableArr;
+        int[] out = new int[list.size()];
+        int i = 0;
+        for (Object cap : list) {
+            out[i++] = readCodecIntField(cap, methodName);
+        }
+        return out;
+    }
+
+    private long[] extractSelectableCodecLongFields(Object selectableArr, String methodName) {
+        if (!(selectableArr instanceof List<?>)) return new long[0];
+        List<?> list = (List<?>) selectableArr;
+        long[] out = new long[list.size()];
+        int i = 0;
+        for (Object cap : list) {
+            out[i++] = readCodecLongField(cap, methodName);
+        }
+        return out;
+    }
+
+    private int readCodecIntField(Object cap, String methodName) {
+        if (cap == null) return 0;
+        try {
+            Object value = cap.getClass().getMethod(methodName).invoke(cap);
+            return value instanceof Number ? ((Number) value).intValue() : 0;
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    private long readCodecLongField(Object cap, String methodName) {
+        if (cap == null) return 0L;
+        try {
+            Object value = cap.getClass().getMethod(methodName).invoke(cap);
+            return value instanceof Number ? ((Number) value).longValue() : 0L;
+        } catch (Throwable ignored) {
+            return 0L;
+        }
     }
 
     private int readOptionalCodecsSupported(String mac) {

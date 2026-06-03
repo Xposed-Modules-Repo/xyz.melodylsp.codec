@@ -573,6 +573,14 @@ public final class CodecBridgeClient {
                 intent.getLongArrayExtra(CodecIpc.EXTRA_SELECTABLE_SPECIFIC_1);
         int[] selectableCodecTypes =
                 intent.getIntArrayExtra(CodecIpc.EXTRA_SELECTABLE_CODEC_TYPES);
+        int[] selectableCodecSampleRates =
+                intent.getIntArrayExtra(CodecIpc.EXTRA_SELECTABLE_CODEC_SAMPLE_RATES);
+        int[] selectableCodecBitsPerSample =
+                intent.getIntArrayExtra(CodecIpc.EXTRA_SELECTABLE_CODEC_BITS_PER_SAMPLE);
+        int[] selectableCodecChannelModes =
+                intent.getIntArrayExtra(CodecIpc.EXTRA_SELECTABLE_CODEC_CHANNEL_MODES);
+        long[] selectableCodecSpecific1Values =
+                intent.getLongArrayExtra(CodecIpc.EXTRA_SELECTABLE_CODEC_SPECIFIC_1_VALUES);
         return new CodecSnapshot(
                 mac,
                 intent.getIntExtra(CodecIpc.EXTRA_CODEC_TYPE, 0),
@@ -586,6 +594,10 @@ public final class CodecBridgeClient {
                 selectableSpecific1,
                 intent.getIntExtra(CodecIpc.EXTRA_SELECTABLE_SAMPLE_RATE_MASK, 0),
                 selectableCodecTypes,
+                selectableCodecSampleRates,
+                selectableCodecBitsPerSample,
+                selectableCodecChannelModes,
+                selectableCodecSpecific1Values,
                 intent.getIntExtra(CodecIpc.EXTRA_OPTIONAL_CODECS_SUPPORTED, -1),
                 intent.getIntExtra(CodecIpc.EXTRA_OPTIONAL_CODECS_ENABLED, -1),
                 intent.getLongExtra(CodecIpc.EXTRA_READ_TIMESTAMP_MS, 0L));

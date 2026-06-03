@@ -136,6 +136,14 @@ public final class CodecBroadcastBridge {
         intent.putExtra(CodecIpc.EXTRA_SELECTABLE_SAMPLE_RATE_MASK,
                 snapshot.selectableSampleRateMask);
         intent.putExtra(CodecIpc.EXTRA_SELECTABLE_CODEC_TYPES, snapshot.selectableCodecTypes);
+        intent.putExtra(CodecIpc.EXTRA_SELECTABLE_CODEC_SAMPLE_RATES,
+                snapshot.selectableCodecSampleRates);
+        intent.putExtra(CodecIpc.EXTRA_SELECTABLE_CODEC_BITS_PER_SAMPLE,
+                snapshot.selectableCodecBitsPerSample);
+        intent.putExtra(CodecIpc.EXTRA_SELECTABLE_CODEC_CHANNEL_MODES,
+                snapshot.selectableCodecChannelModes);
+        intent.putExtra(CodecIpc.EXTRA_SELECTABLE_CODEC_SPECIFIC_1_VALUES,
+                snapshot.selectableCodecSpecific1Values);
         intent.putExtra(CodecIpc.EXTRA_OPTIONAL_CODECS_SUPPORTED,
                 snapshot.optionalCodecsSupported);
         intent.putExtra(CodecIpc.EXTRA_OPTIONAL_CODECS_ENABLED,

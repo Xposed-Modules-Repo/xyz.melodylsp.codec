@@ -1656,15 +1656,39 @@ public final class CodecController {
         int channelMode = 0;
 
         CodecSnapshot remembered = lastHighQualitySnapshots.get(sub.mac);
+        PreferenceStore.RememberedValue rememberedValue = prefs.readSnapshot(sub.mac);
         int rememberedCodec = resolveSelectableCodecType(live, remembered);
         if (rememberedCodec >= 0) {
             codecType = rememberedCodec;
             specific1 = remembered.activeCodecSpecific1;
+            specific2 = remembered.activeCodecSpecific2;
+            specific3 = remembered.activeCodecSpecific3;
+            specific4 = remembered.activeCodecSpecific4;
         } else {
             codecType = bestSelectableHighQualityCodec(live.selectableCodecTypes);
             if (codecType < 0) return null;
-            specific1 = defaultHighQualitySpecific1(codecType);
+            specific1 = rememberedValue != null
+                    ? rememberedValue.codecSpecific1
+                    : defaultHighQualitySpecific1(codecType);
         }
+        int capIndex = selectableCodecIndex(live, codecType);
+        long capSpecific1 = selectableLongValue(live.selectableCodecSpecific1Values, capIndex);
+        if (specific1 == 0L && capSpecific1 != 0L) {
+            specific1 = capSpecific1;
+        }
+        int rememberedRate = remembered != null
+                ? remembered.activeSampleRate
+                : rememberedValue != null ? rememberedValue.sampleRate : 0;
+        sampleRate = chooseSampleRate(
+                selectableIntValue(live.selectableCodecSampleRates, capIndex),
+                rememberedRate,
+                codecType);
+        bitsPerSample = chooseBitsPerSample(
+                selectableIntValue(live.selectableCodecBitsPerSample, capIndex),
+                remembered != null ? remembered.activeBitsPerSample : 0);
+        channelMode = chooseChannelMode(
+                selectableIntValue(live.selectableCodecChannelModes, capIndex),
+                remembered != null ? remembered.activeChannelMode : 0);
 
         return CodecRequest.fromActive(live)
                 .codecType(codecType)
@@ -2015,6 +2039,19 @@ public final class CodecController {
         return -1;
     }
 
+    private static int selectableCodecIndex(CodecSnapshot snapshot, int codecType) {
+        if (snapshot == null || snapshot.selectableCodecTypes == null) return -1;
+        for (int i = 0; i < snapshot.selectableCodecTypes.length; i++) {
+            if (snapshot.selectableCodecTypes[i] == codecType) return i;
+        }
+        if (CodecLabelTable.isLhdc(codecType)) {
+            for (int i = 0; i < snapshot.selectableCodecTypes.length; i++) {
+                if (CodecLabelTable.isLhdc(snapshot.selectableCodecTypes[i])) return i;
+            }
+        }
+        return -1;
+    }
+
     private static int resolveSelectableCodecType(CodecSnapshot live, CodecSnapshot remembered) {
         if (live == null || remembered == null) return -1;
         if (remembered.activeCodecType == CodecLabelTable.CODEC_SBC
@@ -2032,6 +2069,60 @@ public final class CodecController {
             }
         }
         return -1;
+    }
+
+    private static int selectableIntValue(int[] values, int index) {
+        if (values == null || index < 0 || index >= values.length) return 0;
+        return values[index];
+    }
+
+    private static long selectableLongValue(long[] values, int index) {
+        if (values == null || index < 0 || index >= values.length) return 0L;
+        return values[index];
+    }
+
+    private static int chooseSampleRate(int mask, int remembered, int codecType) {
+        if (remembered != 0 && (mask == 0 || (mask & remembered) != 0)) {
+            return remembered;
+        }
+        if (CodecLabelTable.isLhdc(codecType)) {
+            int picked = firstSupported(mask,
+                    SAMPLE_RATE_192000_BIT, SAMPLE_RATE_96000_BIT, SAMPLE_RATE_48000_BIT, 0x1);
+            if (picked != 0) return picked;
+        } else if (codecType == CodecLabelTable.CODEC_LDAC) {
+            int picked = firstSupported(mask, SAMPLE_RATE_96000_BIT, SAMPLE_RATE_48000_BIT, 0x1);
+            if (picked != 0) return picked;
+        }
+        return firstBit(mask);
+    }
+
+    private static int chooseBitsPerSample(int mask, int remembered) {
+        if (remembered != 0 && (mask == 0 || (mask & remembered) != 0)) {
+            return remembered;
+        }
+        int picked = firstSupported(mask, 0x2, 0x4, 0x1, 0x8);
+        return picked != 0 ? picked : firstBit(mask);
+    }
+
+    private static int chooseChannelMode(int mask, int remembered) {
+        if (remembered != 0 && (mask == 0 || (mask & remembered) != 0)) {
+            return remembered;
+        }
+        int picked = firstSupported(mask, 0x2, 0x4, 0x1);
+        return picked != 0 ? picked : firstBit(mask);
+    }
+
+    private static int firstSupported(int mask, int... values) {
+        if (mask == 0) return 0;
+        for (int value : values) {
+            if ((mask & value) != 0) return value;
+        }
+        return 0;
+    }
+
+    private static int firstBit(int mask) {
+        if (mask == 0) return 0;
+        return mask & -mask;
     }
 
     private static long defaultHighQualitySpecific1(int codecType) {

@@ -36,6 +36,14 @@ public final class CodecIpc {
     public static final String EXTRA_SELECTABLE_SPECIFIC_1 = "selectable_specific_1";
     public static final String EXTRA_SELECTABLE_SAMPLE_RATE_MASK = "selectable_sample_rate_mask";
     public static final String EXTRA_SELECTABLE_CODEC_TYPES = "selectable_codec_types";
+    public static final String EXTRA_SELECTABLE_CODEC_SAMPLE_RATES =
+            "selectable_codec_sample_rates";
+    public static final String EXTRA_SELECTABLE_CODEC_BITS_PER_SAMPLE =
+            "selectable_codec_bits_per_sample";
+    public static final String EXTRA_SELECTABLE_CODEC_CHANNEL_MODES =
+            "selectable_codec_channel_modes";
+    public static final String EXTRA_SELECTABLE_CODEC_SPECIFIC_1_VALUES =
+            "selectable_codec_specific_1_values";
     public static final String EXTRA_OPTIONAL_CODECS_SUPPORTED = "optional_codecs_supported";
     public static final String EXTRA_OPTIONAL_CODECS_ENABLED = "optional_codecs_enabled";
     public static final String EXTRA_OPTIONAL_CODECS_ENABLE = "optional_codecs_enable";
