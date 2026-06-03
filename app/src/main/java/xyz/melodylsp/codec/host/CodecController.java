@@ -879,8 +879,9 @@ public final class CodecController {
     }
 
     /**
-     * Pop the official-style high-quality / standard codec mode selector. "高品质" writes the
-     * best selectable high-quality codec directly when possible; "标准" toggles optional codecs off.
+     * Pop the official-style high-quality / standard codec mode selector. High-quality and
+     * standard modes write the target codec directly, then sync the platform optional flag in the
+     * background so OPPO's slow optional confirmation path never blocks the visible switch.
      */
     private void showCodecModePicker(Subscription sub, Object sourcePref) {
         CodecSnapshot snapshot = lastSnapshot.get();
@@ -897,8 +898,7 @@ public final class CodecController {
         ArrayList<Integer> actionList = new ArrayList<>();
         int checked = -1;
         if (isHighQualityChoiceAvailable(snapshot)) {
-            if (snapshot.activeCodecType != CodecLabelTable.CODEC_AAC
-                    && snapshot.optionalCodecsEnabled()) {
+            if (isHighQualityMode(snapshot)) {
                 checked = entryList.size();
             }
             entryList.add(codecModeEntry(snapshot, true));
@@ -912,8 +912,7 @@ public final class CodecController {
             actionList.add(CODEC_MODE_AAC);
         }
         if (isStandardChoiceAvailable(snapshot)) {
-            if (snapshot.activeCodecType != CodecLabelTable.CODEC_AAC
-                    && !snapshot.optionalCodecsEnabled()) {
+            if (isStandardMode(snapshot)) {
                 checked = entryList.size();
             }
             entryList.add(codecModeEntry(snapshot, false));
@@ -942,15 +941,13 @@ public final class CodecController {
                         applyCodecTypeWrite(sub, snapshot, CodecLabelTable.CODEC_AAC);
                     }
                 } else if (action == CODEC_MODE_STANDARD
-                        && snapshot.activeCodecType == CodecLabelTable.CODEC_AAC) {
-                    applyCodecTypeWrite(sub, snapshot, CodecLabelTable.CODEC_SBC);
-                } else if (action == CODEC_MODE_STANDARD
-                        && snapshot.activeCodecType == CodecLabelTable.CODEC_SBC) {
+                        && isStandardMode(snapshot)) {
+                    setOptionalCodecsQuietly(sub, false, "standard_already_active");
                     refreshSnapshot(sub);
                 } else if (action == CODEC_MODE_HIGH) {
                     applyHighQualityCodecWrite(sub, snapshot);
                 } else {
-                    applyOptionalCodecWrite(sub, false);
+                    applyStandardCodecWrite(sub, snapshot);
                 }
             });
         } catch (Throwable t) {
@@ -1564,6 +1561,14 @@ public final class CodecController {
     }
 
     private void applyWrite(Subscription sub, CodecRequest request, WriteFailureHandler failureHandler) {
+        applyWrite(sub, request, failureHandler, null);
+    }
+
+    private void applyWrite(
+            Subscription sub,
+            CodecRequest request,
+            WriteFailureHandler failureHandler,
+            WriteSuccessHandler successHandler) {
         bridge.setCodec(request).whenComplete((result, ex) -> mainHandler.post(() -> {
             if (ex != null) {
                 MLog.e("setCodec future failed", ex);
@@ -1582,6 +1587,7 @@ public final class CodecController {
                     if (prefs.isRemembered(sub.mac) && request.sampleRate != 0) {
                         prefs.writeSnapshot(sub.mac, request.codecSpecific1, request.sampleRate);
                     }
+                    if (successHandler != null) successHandler.onConfirmed(result);
                     refreshSnapshot(sub);
                     break;
                 case TIMEOUT_ROLLED_BACK:
@@ -1605,6 +1611,10 @@ public final class CodecController {
 
     private interface WriteFailureHandler {
         boolean onFailure(WriteResult result, Throwable error);
+    }
+
+    private interface WriteSuccessHandler {
+        void onConfirmed(WriteResult result);
     }
 
     private void applyOptionalCodecWrite(Subscription sub, boolean enable) {
@@ -1680,7 +1690,7 @@ public final class CodecController {
             }
             applyOptionalCodecWrite(sub, true);
             return true;
-        });
+        }, result -> setOptionalCodecsQuietly(sub, true, "high_quality_fastpath"));
     }
 
     private CodecRequest buildHighQualityCodecRequest(Subscription sub, CodecSnapshot live) {
@@ -1753,7 +1763,58 @@ public final class CodecController {
                 .bitsPerSample(0)
                 .channelMode(0)
                 .build();
-        applyWrite(sub, request);
+        MLog.event("write.codec.fastpath", "from", snapshot.activeCodecType, "request", request);
+        applyWrite(sub, request, null, result -> {
+            if (codecType == CodecLabelTable.CODEC_AAC
+                    || codecType == CodecLabelTable.CODEC_SBC) {
+                setOptionalCodecsQuietly(sub, false, "low_quality_fastpath");
+            }
+        });
+    }
+
+    private void applyStandardCodecWrite(Subscription sub, CodecSnapshot snapshot) {
+        setCodecModeStatus(sub, Strings.STATE_SWITCHING_CODEC);
+        CodecRequest request = CodecRequest.fromActive(snapshot)
+                .codecType(CodecLabelTable.CODEC_SBC)
+                .codecSpecific1(0L)
+                .codecSpecific2(0L)
+                .codecSpecific3(0L)
+                .codecSpecific4(0L)
+                .sampleRate(0)
+                .bitsPerSample(0)
+                .channelMode(0)
+                .build();
+        MLog.event("write.standard.fastpath",
+                "from", snapshot.activeCodecType,
+                "request", request);
+        setOptionalCodecsQuietly(sub, false, "standard_fastpath_parallel");
+        applyWrite(sub, request, (result, error) -> {
+            if (error != null) {
+                MLog.w("Standard fast path failed; falling back to optional codecs", error);
+            } else {
+                MLog.event("write.standard.fastpath.fallback",
+                        "outcome", result != null ? result.outcome : "unknown",
+                        "path", result != null ? result.path : "unknown");
+            }
+            applyOptionalCodecWrite(sub, false);
+            return true;
+        });
+    }
+
+    private void setOptionalCodecsQuietly(Subscription sub, boolean enable, String reason) {
+        if (sub == null || sub.mac == null) return;
+        bridge.setOptionalCodecs(sub.mac, enable).whenComplete((result, ex) -> {
+            if (ex != null) {
+                MLog.w("Optional codec background sync failed: reason="
+                        + reason + " enable=" + enable, ex);
+                return;
+            }
+            MLog.event("write.optional.background",
+                    "reason", reason,
+                    "enable", enable,
+                    "outcome", result != null ? result.outcome : "unknown",
+                    "path", result != null ? result.path : "unknown");
+        });
     }
 
     private void refreshSnapshot(Subscription sub) {
@@ -1928,7 +1989,7 @@ public final class CodecController {
             PrefRef.setVisible(mode, true);
             return;
         }
-        PrefRef.setSummary(mode, codecModeEntry(snapshot, snapshot.optionalCodecsEnabled()));
+        PrefRef.setSummary(mode, codecModeEntry(snapshot, isHighQualityMode(snapshot)));
         PrefRef.setVisible(mode, true);
     }
 
@@ -2044,11 +2105,17 @@ public final class CodecController {
     }
 
     private String standardCodecLabel(CodecSnapshot snapshot) {
-        if (snapshot != null && !snapshot.optionalCodecsEnabled()) {
-            return CodecLabelTable.codecLabel(
-                    context, snapshot.activeCodecType, snapshot.activeCodecSpecific1);
-        }
         return Strings.CODEC_LABEL_SBC;
+    }
+
+    private static boolean isHighQualityMode(CodecSnapshot snapshot) {
+        if (snapshot == null) return false;
+        return snapshot.activeCodecType != CodecLabelTable.CODEC_SBC
+                && snapshot.activeCodecType != CodecLabelTable.CODEC_AAC;
+    }
+
+    private static boolean isStandardMode(CodecSnapshot snapshot) {
+        return snapshot != null && snapshot.activeCodecType == CodecLabelTable.CODEC_SBC;
     }
 
     private static int bestSelectableHighQualityCodec(int[] codecTypes) {
