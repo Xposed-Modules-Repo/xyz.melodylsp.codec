@@ -879,8 +879,8 @@ public final class CodecController {
     }
 
     /**
-     * Pop the official-style high-quality / standard codec mode selector. This mirrors
-     * SettingsLib's A2DP row: "高品质" toggles optional codecs on, "标准" toggles them off.
+     * Pop the official-style high-quality / standard codec mode selector. "高品质" writes the
+     * best selectable high-quality codec directly when possible; "标准" toggles optional codecs off.
      */
     private void showCodecModePicker(Subscription sub, Object sourcePref) {
         CodecSnapshot snapshot = lastSnapshot.get();
@@ -947,8 +947,10 @@ public final class CodecController {
                 } else if (action == CODEC_MODE_STANDARD
                         && snapshot.activeCodecType == CodecLabelTable.CODEC_SBC) {
                     refreshSnapshot(sub);
+                } else if (action == CODEC_MODE_HIGH) {
+                    applyHighQualityCodecWrite(sub, snapshot);
                 } else {
-                    applyOptionalCodecWrite(sub, action == CODEC_MODE_HIGH);
+                    applyOptionalCodecWrite(sub, false);
                 }
             });
         } catch (Throwable t) {
@@ -1558,9 +1560,14 @@ public final class CodecController {
     }
 
     private void applyWrite(Subscription sub, CodecRequest request) {
+        applyWrite(sub, request, null);
+    }
+
+    private void applyWrite(Subscription sub, CodecRequest request, WriteFailureHandler failureHandler) {
         bridge.setCodec(request).whenComplete((result, ex) -> mainHandler.post(() -> {
             if (ex != null) {
                 MLog.e("setCodec future failed", ex);
+                if (failureHandler != null && failureHandler.onFailure(null, ex)) return;
                 Toast.makeText(context, Strings.TOAST_APPLY_FAILED, Toast.LENGTH_SHORT).show();
                 refreshSnapshot(sub);
                 return;
@@ -1578,6 +1585,7 @@ public final class CodecController {
                     refreshSnapshot(sub);
                     break;
                 case TIMEOUT_ROLLED_BACK:
+                    if (failureHandler != null && failureHandler.onFailure(result, null)) return;
                     Toast.makeText(context, Strings.TOAST_APPLY_FAILED, Toast.LENGTH_SHORT).show();
                     if (result.rollbackSnapshot != null) {
                         publish(result.rollbackSnapshot, sub);
@@ -1587,11 +1595,16 @@ public final class CodecController {
                     break;
                 case FAILED:
                 default:
+                    if (failureHandler != null && failureHandler.onFailure(result, null)) return;
                     Toast.makeText(context, Strings.TOAST_APPLY_FAILED, Toast.LENGTH_SHORT).show();
                     refreshSnapshot(sub);
                     break;
             }
         }));
+    }
+
+    private interface WriteFailureHandler {
+        boolean onFailure(WriteResult result, Throwable error);
     }
 
     private void applyOptionalCodecWrite(Subscription sub, boolean enable) {
@@ -1642,6 +1655,32 @@ public final class CodecController {
         setCodecModeStatus(sub, Strings.STATE_SWITCHING_CODEC);
         applyWrite(sub, request);
         return true;
+    }
+
+    private void applyHighQualityCodecWrite(Subscription sub, CodecSnapshot snapshot) {
+        CodecRequest request = buildHighQualityCodecRequest(sub, snapshot);
+        if (request == null) {
+            MLog.event("write.high_quality.fastpath.skip",
+                    "reason", "no_selectable_request",
+                    "live", String.valueOf(snapshot));
+            applyOptionalCodecWrite(sub, true);
+            return;
+        }
+        setCodecModeStatus(sub, Strings.STATE_SWITCHING_CODEC);
+        MLog.event("write.high_quality.fastpath",
+                "from", snapshot.activeCodecType,
+                "request", request);
+        applyWrite(sub, request, (result, error) -> {
+            if (error != null) {
+                MLog.w("High-quality fast path failed; falling back to optional codecs", error);
+            } else {
+                MLog.event("write.high_quality.fastpath.fallback",
+                        "outcome", result != null ? result.outcome : "unknown",
+                        "path", result != null ? result.path : "unknown");
+            }
+            applyOptionalCodecWrite(sub, true);
+            return true;
+        });
     }
 
     private CodecRequest buildHighQualityCodecRequest(Subscription sub, CodecSnapshot live) {
