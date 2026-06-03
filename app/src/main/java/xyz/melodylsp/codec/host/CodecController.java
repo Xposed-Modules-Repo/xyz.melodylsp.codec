@@ -23,8 +23,10 @@ import android.text.TextUtils;
 import android.util.DisplayMetrics;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.animation.PathInterpolator;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.PopupWindow;
@@ -1030,6 +1032,7 @@ public final class CodecController {
         if (root == null) return;
 
         final PopupWindow[] popupRef = new PopupWindow[1];
+        final boolean[] dismissing = {false};
         PopupShadowLayout shell = new PopupShadowLayout(popupContext, dp(popupContext, 12));
         shell.setClipToPadding(false);
         shell.setClipChildren(false);
@@ -1086,8 +1089,7 @@ public final class CodecController {
 
             row.setOnClickListener(v -> {
                 PopupWindow popup = popupRef[0];
-                if (popup != null) popup.dismiss();
-                callback.onChoice(index);
+                dismissPopupAnimated(popup, shell, dismissing, () -> callback.onChoice(index));
             });
             list.addView(row, new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
@@ -1112,10 +1114,19 @@ public final class CodecController {
         PopupWindow popup = new PopupWindow(
                 shell, width, LinearLayout.LayoutParams.WRAP_CONTENT, true);
         popupRef[0] = popup;
+        preparePopupEnter(shell);
         popup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         popup.setOutsideTouchable(true);
         popup.setClippingEnabled(false);
         popup.setInputMethodMode(PopupWindow.INPUT_METHOD_NOT_NEEDED);
+        popup.setAnimationStyle(0);
+        popup.setTouchInterceptor((v, event) -> {
+            if (event != null && event.getAction() == MotionEvent.ACTION_OUTSIDE) {
+                dismissPopupAnimated(popup, shell, dismissing, null);
+                return true;
+            }
+            return false;
+        });
         if (Build.VERSION.SDK_INT >= 21) {
             popup.setElevation(0);
         }
@@ -1138,6 +1149,63 @@ public final class CodecController {
                 metrics.heightPixels - popupHeightEstimate - dp(popupContext, 96));
         y = Math.max(minY, Math.min(y, maxY));
         popup.showAtLocation(root, Gravity.TOP | Gravity.START, x, y);
+        startPopupEnter(shell);
+    }
+
+    private static void preparePopupEnter(View content) {
+        content.setAlpha(0f);
+        content.setScaleX(0.96f);
+        content.setScaleY(0.96f);
+    }
+
+    private static void startPopupEnter(View content) {
+        content.post(() -> {
+            setPopupAnimationPivot(content);
+            content.animate().cancel();
+            content.animate()
+                    .alpha(1f)
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .setDuration(220L)
+                    .setInterpolator(new PathInterpolator(0.33f, 0f, 0.67f, 1f))
+                    .start();
+        });
+    }
+
+    private static void dismissPopupAnimated(
+            PopupWindow popup,
+            View content,
+            boolean[] dismissing,
+            Runnable afterDismiss) {
+        if (popup == null || !popup.isShowing()) {
+            if (afterDismiss != null) afterDismiss.run();
+            return;
+        }
+        if (dismissing[0]) return;
+        dismissing[0] = true;
+        setPopupAnimationPivot(content);
+        content.animate().cancel();
+        final boolean[] finished = {false};
+        Runnable finish = () -> {
+            if (finished[0]) return;
+            finished[0] = true;
+            if (popup.isShowing()) popup.dismiss();
+            if (afterDismiss != null) afterDismiss.run();
+        };
+        content.animate()
+                .alpha(0f)
+                .scaleX(0.98f)
+                .scaleY(0.98f)
+                .setDuration(160L)
+                .setInterpolator(new PathInterpolator(0.33f, 0f, 0.67f, 1f))
+                .withEndAction(finish)
+                .start();
+        content.postDelayed(finish, 220L);
+    }
+
+    private static void setPopupAnimationPivot(View content) {
+        content.setPivotX(content.getWidth() - content.getPaddingRight());
+        content.setPivotY(content.getPaddingTop());
     }
 
     private static final class PopupShadowLayout extends FrameLayout {
