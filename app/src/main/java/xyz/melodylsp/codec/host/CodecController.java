@@ -9,7 +9,10 @@ import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
@@ -1029,24 +1032,29 @@ public final class CodecController {
         FrameLayout shell = new FrameLayout(popupContext);
         shell.setClipToPadding(false);
         shell.setClipChildren(false);
-        int shadowPad = dp(popupContext, 8);
+        int shadowPad = dp(popupContext, 24);
         shell.setPadding(shadowPad, shadowPad, shadowPad, shadowPad);
 
         LinearLayout list = new LinearLayout(popupContext);
         list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(0, dp(popupContext, 2), 0, dp(popupContext, 2));
         int horizontal = dp(popupContext, 16);
-        int rowHeight = dp(popupContext, 50);
+        int vertical = dp(popupContext, 8);
+        int rowHeight = dp(popupContext, 48);
         int blue = Color.rgb(0, 105, 255);
-        int textColor = Color.rgb(25, 25, 25);
-        int dividerColor = Color.argb(28, 0, 0, 0);
+        int textColor = Color.argb(230, 0, 0, 0);
+        int dividerColor = Color.argb(20, 0, 0, 0);
 
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(Color.WHITE);
         bg.setCornerRadius(dp(popupContext, 12));
-        bg.setStroke(Math.max(1, dp(popupContext, 1)), Color.argb(20, 0, 0, 0));
         list.setBackground(bg);
         if (Build.VERSION.SDK_INT >= 21) {
-            list.setElevation(dp(popupContext, 6));
+            list.setClipToOutline(true);
+            list.setElevation(dp(popupContext, 30));
+            if (Build.VERSION.SDK_INT >= 28) {
+                list.setOutlineSpotShadowColor(Color.argb(128, 0, 0, 0));
+            }
         }
 
         for (int i = 0; i < entries.length; i++) {
@@ -1054,33 +1062,30 @@ public final class CodecController {
             LinearLayout row = new LinearLayout(popupContext);
             row.setGravity(Gravity.CENTER_VERTICAL);
             row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setPadding(horizontal, 0, horizontal, 0);
+            row.setPadding(horizontal, vertical, horizontal, vertical);
             row.setMinimumHeight(rowHeight);
 
             TextView title = new TextView(popupContext);
             title.setText(entries[i]);
-            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+            title.setTypeface(Typeface.create("sans-serif-regular", Typeface.NORMAL));
             title.setSingleLine(true);
             title.setHorizontallyScrolling(false);
             title.setMaxLines(1);
             title.setEllipsize(TextUtils.TruncateAt.END);
-            title.setIncludeFontPadding(false);
             if (Build.VERSION.SDK_INT >= 26) {
                 title.setAutoSizeTextTypeUniformWithConfiguration(
-                        13, 17, 1, TypedValue.COMPLEX_UNIT_SP);
+                        13, 16, 1, TypedValue.COMPLEX_UNIT_SP);
             }
             title.setGravity(Gravity.CENTER_VERTICAL);
             title.setTextColor(i == checked ? blue : textColor);
             row.addView(title, new LinearLayout.LayoutParams(
-                    0, LinearLayout.LayoutParams.MATCH_PARENT, 1f));
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-            TextView check = new TextView(popupContext);
-            check.setText(i == checked ? "\u2713" : "");
-            check.setTextColor(blue);
-            check.setTextSize(26);
-            check.setGravity(Gravity.CENTER);
-            row.addView(check, new LinearLayout.LayoutParams(
-                    dp(popupContext, 40), LinearLayout.LayoutParams.MATCH_PARENT));
+            if (i == checked) {
+                row.addView(new CheckMarkView(popupContext, blue), new LinearLayout.LayoutParams(
+                        dp(popupContext, 24), dp(popupContext, 24)));
+            }
 
             row.setOnClickListener(v -> {
                 PopupWindow popup = popupRef[0];
@@ -1088,7 +1093,7 @@ public final class CodecController {
                 callback.onChoice(index);
             });
             list.addView(row, new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, rowHeight));
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
             if (i + 1 < entries.length) {
                 View divider = new View(popupContext);
@@ -1112,10 +1117,10 @@ public final class CodecController {
         popupRef[0] = popup;
         popup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         popup.setOutsideTouchable(true);
-        popup.setClippingEnabled(true);
+        popup.setClippingEnabled(false);
         popup.setInputMethodMode(PopupWindow.INPUT_METHOD_NOT_NEEDED);
         if (Build.VERSION.SDK_INT >= 21) {
-            popup.setElevation(dp(popupContext, 14));
+            popup.setElevation(0);
         }
         int x = metrics.widthPixels - edgeMargin - width + shadowPad;
         int y = Math.round(metrics.heightPixels * 0.38f);
@@ -1129,12 +1134,36 @@ public final class CodecController {
             y = loc[1] - dp(popupContext, 8) - shadowPad;
         }
         int popupHeightEstimate = entries.length * rowHeight
-                + Math.max(0, entries.length - 1) + shadowPad * 2;
+                + Math.max(0, entries.length - 1)
+                + dp(popupContext, 4) + shadowPad * 2;
         int minY = dp(popupContext, 96);
         int maxY = Math.max(minY,
                 metrics.heightPixels - popupHeightEstimate - dp(popupContext, 96));
         y = Math.max(minY, Math.min(y, maxY));
         popup.showAtLocation(root, Gravity.TOP | Gravity.START, x, y);
+    }
+
+    private static final class CheckMarkView extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        CheckMarkView(Context context, int color) {
+            super(context);
+            float density = context.getResources().getDisplayMetrics().density;
+            paint.setColor(color);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(2f, 2.4f * density));
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeJoin(Paint.Join.ROUND);
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            float w = getWidth();
+            float h = getHeight();
+            canvas.drawLine(w * 0.20f, h * 0.54f, w * 0.42f, h * 0.74f, paint);
+            canvas.drawLine(w * 0.42f, h * 0.74f, w * 0.82f, h * 0.26f, paint);
+        }
     }
 
     private static int findPopupRightBoundary(View anchor, Context context, DisplayMetrics metrics) {
