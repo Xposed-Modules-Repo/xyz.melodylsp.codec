@@ -13,6 +13,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.Locale;
@@ -69,7 +70,7 @@ public final class CodecBridgeClient {
     private final CopyOnWriteArrayList<SnapshotListener> listeners = new CopyOnWriteArrayList<>();
     private volatile ICodecBridge cachedBridge;
     private volatile ICodecBridgeListener registeredListener;
-    private volatile boolean directStatusBlocked;
+    private final AtomicBoolean directStatusBlocked = new AtomicBoolean(false);
 
     public CodecBridgeClient(
             Context context,
@@ -112,12 +113,15 @@ public final class CodecBridgeClient {
         CodecSnapshot snapshot = getStatusViaBridge(mac);
         if (snapshot != null) return snapshot;
 
-        if (!directStatusBlocked) {
+        snapshot = queryCodecViaBroadcast(mac, CODEC_BROADCAST_TIMEOUT_MS);
+        if (snapshot != null) return snapshot;
+
+        if (!directStatusBlocked.get()) {
             snapshot = getStatusViaDirectApi(mac);
             if (snapshot != null) return snapshot;
         }
 
-        return queryCodecViaBroadcast(mac, CODEC_BROADCAST_TIMEOUT_MS);
+        return null;
     }
 
     private CodecSnapshot getStatusViaBridge(String mac) {
@@ -137,8 +141,9 @@ public final class CodecBridgeClient {
             return reflect.readStatus(mac);
         } catch (Throwable t) {
             if (isCdmStatusBlock(t)) {
-                directStatusBlocked = true;
-                MLog.w("direct codec status API blocked by CDM; using bridge/broadcast status path");
+                if (directStatusBlocked.compareAndSet(false, true)) {
+                    MLog.w("direct codec status API blocked by CDM; using bridge/broadcast status path");
+                }
             } else {
                 MLog.w("getStatus(" + mac + ") failed via direct API", t);
             }
