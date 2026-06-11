@@ -12,6 +12,12 @@ android {
         targetSdk = 36
         versionCode = 12
         versionName = "1.6.0"
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+            }
+        }
     }
 
     buildFeatures {
@@ -36,7 +42,17 @@ android {
         }
     }
 
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+        }
+    }
+
     packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+
         // libxposed entry list and module.prop must survive resource merging.
         resources {
             merges += "META-INF/xposed/*"

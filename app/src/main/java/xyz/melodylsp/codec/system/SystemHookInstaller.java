@@ -4,6 +4,8 @@ import android.app.Application;
 import android.bluetooth.BluetoothDevice;
 import android.content.Context;
 import android.os.Binder;
+import android.os.Handler;
+import android.os.Looper;
 
 import java.lang.reflect.Array;
 import java.lang.reflect.Constructor;
@@ -36,14 +38,22 @@ public final class SystemHookInstaller {
             "com.android.bluetooth.a2dp.A2dpNativeInterface";
     private static final String CLASS_BT_UTILS = "com.android.bluetooth.Utils";
     private static final String MELODY_PKG = "com.oplus.melody";
+    private static final long[] NATIVE_PATCH_RETRY_DELAYS_MS = {
+            0L, 350L, 1_500L, 5_000L, 12_000L
+    };
 
     private final MelodyCodecLspEntry module;
     private final ClassLoader classLoader;
     private final String sourceDir;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private CodecBridgeService bridgeService;
     private CodecBroadcastBridge codecBroadcastBridge;
     private BluetoothLeAudioBridge leAudioBridge;
     private boolean serviceManagerAttempted;
+    private boolean nativePatchTerminal;
+    private boolean nativePatchRunning;
+    private boolean nativePatchScheduled;
+    private int nativePatchAttempts;
 
     public SystemHookInstaller(
             MelodyCodecLspEntry module, ClassLoader classLoader, String sourceDir) {
@@ -162,10 +172,12 @@ public final class SystemHookInstaller {
                 Object result = chain.proceed();
                 Object app = chain.getThisObject();
                 if (app instanceof Context) {
+                    NativeLhdcMemoryPatch.configureModuleContext((Context) app);
                     MLog.setDiagnosticContext((Context) app, "bluetooth");
                     MLog.event("scope.system.context.ready");
                     ensureLeAudioBridge((Context) app);
                     ensureCodecBroadcastBridge((Context) app, bridgeService);
+                    scheduleNativeLhdcMemoryPatch("application.onCreate");
                 }
                 return result;
             });
@@ -280,7 +292,9 @@ public final class SystemHookInstaller {
         Context context = a2dpService instanceof Context
                 ? (Context) a2dpService
                 : currentApplication();
+        scheduleNativeLhdcMemoryPatch("a2dp.service");
         if (context != null) {
+            NativeLhdcMemoryPatch.configureModuleContext(context);
             ensureLeAudioBridge(context);
         }
         if (a2dpService == null) return;
@@ -366,6 +380,7 @@ public final class SystemHookInstaller {
             }
             module.hook(m).intercept(chain -> {
                 Object[] args = chain.getArgs().toArray();
+                runNativeLhdcMemoryPatchNow("native.setCodecConfigPreference");
                 MLog.event("bt.native.setCodecConfigPreference",
                         "device", args.length > 0 ? describeDevice(args[0]) : "?",
                         "configs", args.length > 1 ? describeCodecConfigArray(args[1]) : "[]");
@@ -383,6 +398,55 @@ public final class SystemHookInstaller {
             hooked++;
         }
         MLog.event("bt.native.codec.hooks", "count", hooked, "class", nativeCls.getName());
+    }
+
+    private synchronized void scheduleNativeLhdcMemoryPatch(String reason) {
+        if (nativePatchTerminal || nativePatchScheduled) return;
+        if (nativePatchAttempts >= NATIVE_PATCH_RETRY_DELAYS_MS.length) {
+            nativePatchTerminal = true;
+            MLog.event("lhdc.memory_patch.give_up", "attempts", nativePatchAttempts);
+            return;
+        }
+        int attempt = nativePatchAttempts++;
+        long delay = NATIVE_PATCH_RETRY_DELAYS_MS[attempt];
+        nativePatchScheduled = true;
+        mainHandler.postDelayed(() -> {
+            synchronized (SystemHookInstaller.this) {
+                nativePatchScheduled = false;
+            }
+            runNativeLhdcMemoryPatch("retry:" + reason, true);
+        }, delay);
+    }
+
+    private void runNativeLhdcMemoryPatchNow(String reason) {
+        runNativeLhdcMemoryPatch(reason, false);
+    }
+
+    private void runNativeLhdcMemoryPatch(String reason, boolean allowRetry) {
+        synchronized (this) {
+            if (nativePatchTerminal || nativePatchRunning) return;
+            nativePatchRunning = true;
+        }
+
+        NativeLhdcMemoryPatch.PatchResult result = NativeLhdcMemoryPatch.apply();
+        MLog.event("lhdc.memory_patch",
+                "status", result.status,
+                "reason", reason,
+                "detail", result.reason,
+                "addr", result.addressHex(),
+                "patched", result.patchedCount,
+                "original", result.originalCount,
+                "success", result.success);
+
+        synchronized (this) {
+            nativePatchRunning = false;
+            if (result.terminal) {
+                nativePatchTerminal = true;
+            }
+        }
+        if (!result.terminal && allowRetry) {
+            scheduleNativeLhdcMemoryPatch(reason);
+        }
     }
 
     private static boolean isNativeCodecPreferenceMethod(Method m) {

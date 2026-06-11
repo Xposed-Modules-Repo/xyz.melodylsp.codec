@@ -143,7 +143,9 @@ LHDC 的实时切换更依赖厂商蓝牙栈。模块会直接写入目标播放
 
 ## 可选 KernelSU / Magisk Native 补丁
 
-`ksu/oplus_lhdcv5_native_patch/` 放置了一个可选的 KernelSU / Magisk 兼容模块源码，用于处理部分 OPlus / ColorOS 蓝牙栈故意忽略 LHDC V5 固定 900 / 1000 kbps 目标码率的问题。它不是 LSPosed APK 的一部分，也不会随 APK 发布工作流自动上传。
+APK 的 `com.android.bluetooth` 作用域会先尝试一个实验性的运行时内存补丁：在蓝牙进程内扫描已加载的 `libbluetooth_jni.so`，命中已知 LHDC V5 字节特征后临时修改内存页权限并写入同一处 4 字节补丁。这个路径不替换系统文件，也不创建 KSU / Magisk mount；可以通过 `evt=lhdc.memory_patch` 日志确认状态。
+
+`ksu/oplus_lhdcv5_native_patch/` 放置了一个备用的 KernelSU / Magisk 兼容模块源码，用于处理部分 OPlus / ColorOS 蓝牙栈故意忽略 LHDC V5 固定 900 / 1000 kbps 目标码率的问题。它不是 LSPosed APK 的一部分，也不会随 APK 发布工作流自动上传。只有当运行时内存补丁失败、且仍需要 native patch 时，才需要刷入这个 KSU / Magisk 包。
 
 这个补丁模块不内置任何设备上的 `libbluetooth_jni.so`。刷入时它会读取当前系统的 `/system/lib64/libbluetooth_jni.so`，只有在已知原始字节特征唯一命中时才复制到模块 overlay 路径并现场改 4 字节；匹配不到或命中过多会直接中止安装，避免误修补其他 ROM 布局。安装信息会写入 `/data/adb/modules/oplus_lhdcv5_native_patch/patch-info.txt`，开机后也会通过 `OPlusLHDCV5Patch` logcat 标签输出。
 
