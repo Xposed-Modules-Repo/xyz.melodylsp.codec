@@ -1,5 +1,11 @@
 # OPlus LHDC V5 Native Bitrate Patch
 
+> Deprecated: current MelodyCodecTweaker APKs include an LSPosed in-process
+> runtime memory patch for LHDC V5 bitrate handling. Prefer the APK's built-in
+> `com.android.bluetooth` scope patch. This KernelSU / Magisk module is kept
+> only as historical reference and emergency fallback because it creates a
+> systemless mount.
+
 This is an optional KernelSU / Magisk-compatible native patch module for OPlus /
 ColorOS Bluetooth stacks that ignore fixed LHDC V5 target bitrates such as
 900 / 1000 kbps.

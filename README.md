@@ -141,15 +141,48 @@ LHDC 的实时切换更依赖厂商蓝牙栈。模块会直接写入目标播放
 - 系统冻结 `com.oplus.wirelesssettings`、蓝牙栈重启或耳机重连期间，状态回读可能延迟几秒。
 - 部分厂商蓝牙栈会拒绝特定播放质量 / 采样率组合，模块会尝试联动修正，但不能保证所有组合都能实时生效。
 
-## 可选 KernelSU / Magisk Native 补丁
+## LHDC V5 运行时内存补丁
 
-APK 的 `com.android.bluetooth` 作用域会先尝试一个实验性的运行时内存补丁：在蓝牙进程内扫描已加载的 `libbluetooth_jni.so`，命中已知 LHDC V5 字节特征后临时修改内存页权限并写入同一处 4 字节补丁。这个路径不替换系统文件，也不创建 KSU / Magisk mount；可以通过 `evt=lhdc.memory_patch` 日志确认状态。
+当前版本已内置 LSPosed 进程内 native helper，用来处理部分 OPlus / ColorOS 蓝牙栈忽略 LHDC V5 固定 900 / 1000 kbps 目标码率的问题。只要启用 `com.android.bluetooth` 作用域，模块会在蓝牙进程启动后自动尝试运行时内存补丁。
 
-`ksu/oplus_lhdcv5_native_patch/` 放置了一个备用的 KernelSU / Magisk 兼容模块源码，用于处理部分 OPlus / ColorOS 蓝牙栈故意忽略 LHDC V5 固定 900 / 1000 kbps 目标码率的问题。它不是 LSPosed APK 的一部分，也不会随 APK 发布工作流自动上传。只有当运行时内存补丁失败、且仍需要 native patch 时，才需要刷入这个 KSU / Magisk 包。
+补丁流程：
 
-这个补丁模块不内置任何设备上的 `libbluetooth_jni.so`。刷入时它会读取当前系统的 `/system/lib64/libbluetooth_jni.so`，只有在已知原始字节特征唯一命中时才复制到模块 overlay 路径并现场改 4 字节；匹配不到或命中过多会直接中止安装，避免误修补其他 ROM 布局。安装信息会写入 `/data/adb/modules/oplus_lhdcv5_native_patch/patch-info.txt`，开机后也会通过 `OPlusLHDCV5Patch` logcat 标签输出。
+- 在 `com.android.bluetooth` 进程内加载 APK 自带的 `libmelody_lhdc_patch.so`。
+- 扫描当前已映射的 `/system/lib64/libbluetooth_jni.so`。
+- 只有在已知 LHDC V5 原始字节特征唯一命中时，才临时修改目标内存页权限并写入同一处 4 字节补丁。
+- 写入后立即回读验证，并恢复原内存页权限。
+- 不替换系统文件，不复制系统库，不创建 KernelSU / Magisk mount。
 
-打包时从源码目录生成 zip：
+可通过 logcat 确认补丁状态：
+
+```bash
+adb logcat -s MelodyCodecLsp:V | grep lhdc.memory_patch
+```
+
+成功时通常能看到：
+
+```text
+evt=lhdc.memory_patch.native_loaded path=.../libmelody_lhdc_patch.so
+evt=lhdc.memory_patch status=patched ... success=true
+```
+
+如果蓝牙进程已经被补过，可能显示：
+
+```text
+evt=lhdc.memory_patch status=already_patched ... success=true
+```
+
+实测补丁生效后，LHDC V5 音质优先可稳定进入约 1000 kbps 档位，蓝牙栈日志会出现 `quality_mode=HIGH1_1000(8)`，切换后不会回落到自适应。
+
+### 已过时的 KernelSU / Magisk Native 补丁
+
+`ksu/oplus_lhdcv5_native_patch/` 保留了一份旧的 KernelSU / Magisk 兼容模块源码，只作为历史参考和极端兜底。它通过系统级 overlay 替换当前设备上的 `libbluetooth_jni.so` 副本，虽然安装时会动态匹配字节特征，但仍会创建可被检测到的 systemless mount。
+
+常规发布不再建议打包或上传这个 KSU / Magisk zip。只有当内置运行时内存补丁无法加载、无法命中特征，且用户明确接受 KernelSU / Magisk mount 风险时，才考虑手动使用这份旧源码。
+
+旧补丁模块不内置任何设备上的 `libbluetooth_jni.so`。刷入时它会读取当前系统的 `/system/lib64/libbluetooth_jni.so`，只有在已知原始字节特征唯一命中时才复制到模块 overlay 路径并现场改 4 字节；匹配不到或命中过多会直接中止安装，避免误修补其他 ROM 布局。安装信息会写入 `/data/adb/modules/oplus_lhdcv5_native_patch/patch-info.txt`，开机后也会通过 `OPlusLHDCV5Patch` logcat 标签输出。
+
+如确实需要手动打包旧补丁，可从源码目录生成 zip：
 
 ```bash
 cd ksu/oplus_lhdcv5_native_patch
@@ -157,8 +190,6 @@ zip -r ../../OPlus-LHDCV5-Native-Patch-0.3-dynamic-test.zip .
 ```
 
 请确认 zip 内路径使用 `/` 分隔，例如 `META-INF/com/google/android/updater-script`。不要使用会生成 `META-INF\com\...` 这类反斜杠 entry 的打包方式；这类包可能仍能挂载成功，但在 KernelSU / Magisk 管理器里会显示异常路径。
-
-发布时当前仓库只自动构建和上传 LSPosed APK。KSU native patch zip 需要手动打包后作为额外附件上传到 GitHub Release。
 
 ## 日志排查
 
@@ -204,7 +235,7 @@ GitHub Actions 分为两个入口：
 
 - `Build APK`：推送 `main` / `master`、PR 或手动触发时执行，用于日常开发构建，产物名带 `dev` 和提交号。
 - `Release APK`：仅手动触发。它会按 patch / minor / major 或指定版本号自动抬升 `versionName` 和 `versionCode`，构建签名 APK，提交版本号变更，创建符合 Xposed Modules Repo 规则的 `versionCode-versionName` tag（例如 `4-1.2.0`），并在 GitHub Release 中写入手填说明和自动生成的提交记录。发布工作流还会把源码、tag 和 APK Release 自动同步到 `Xposed-Modules-Repo/xyz.melodylsp.codec`，需要在源仓库配置 `LSP_REPO_TOKEN` secret。
-- KSU / Magisk native patch 目前不走 GitHub Actions 自动打包；需要从 `ksu/oplus_lhdcv5_native_patch/` 手动生成 zip，并在 Release 页面作为额外附件上传。
+- KSU / Magisk native patch 已过时，不再作为常规 Release 附件发布；如需极端兜底，可从 `ksu/oplus_lhdcv5_native_patch/` 手动生成 zip。
 
 ## 项目结构
 
@@ -230,7 +261,7 @@ app/src/main/
 
 ksu/oplus_lhdcv5_native_patch/
 ├── META-INF/com/google/android/updater-script
-├── customize.sh    # 安装时动态修补当前系统 libbluetooth_jni.so
+├── customize.sh    # 旧兜底方案：安装时动态修补当前系统 libbluetooth_jni.so
 ├── module.prop
 └── service.sh      # 开机后输出 patch-info 到 logcat
 ```
