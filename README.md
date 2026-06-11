@@ -23,18 +23,19 @@
 - Android 12 及以上。
 - 支持 libxposed API 101 的框架，例如新版 LSPosed。
 - OPPO / OnePlus / ColorOS 系统上的「无线耳机」App：`com.oplus.melody`。
-- 建议启用全部三个 LSPosed 作用域：
+- 建议启用全部四个 LSPosed 作用域：
   - `com.oplus.melody`
   - `com.android.bluetooth`
   - `com.oplus.wirelesssettings`
+  - `com.android.settings`
 
-`com.oplus.melody` 负责页面注入和用户交互，`com.android.bluetooth` 负责更稳定地读写 A2DP 编解码器状态，`com.oplus.wirelesssettings` 负责调用系统侧 LE Audio 能力。少开作用域可能仍能部分工作，但实时切换、状态回读和 LE Audio 会更容易失效。
+`com.oplus.melody` 负责页面注入和用户交互，`com.android.bluetooth` 负责更稳定地读写 A2DP 编解码器状态，`com.oplus.wirelesssettings` 负责调用系统侧 LE Audio 能力，`com.android.settings` 只用于收敛开发者选项里 LHDC V5 扩展值造成的无害日志噪音。少开作用域可能仍能部分工作，但实时切换、状态回读、LE Audio 和系统设置侧日志降噪会更容易失效。
 
 ## 安装与启用
 
 1. 安装模块 APK。
 2. 在 LSPosed 中启用模块。
-3. 勾选上面三个作用域。
+3. 勾选上面四个作用域。
 4. 强制停止「无线耳机」、蓝牙相关进程和无线设置，或者直接重启手机。
 5. 打开「无线耳机」App，进入耳机主面板或 OneSpace 面板查看注入项。
 
@@ -140,6 +141,23 @@ LHDC 的实时切换更依赖厂商蓝牙栈。模块会直接写入目标播放
 - 系统冻结 `com.oplus.wirelesssettings`、蓝牙栈重启或耳机重连期间，状态回读可能延迟几秒。
 - 部分厂商蓝牙栈会拒绝特定播放质量 / 采样率组合，模块会尝试联动修正，但不能保证所有组合都能实时生效。
 
+## 可选 KernelSU / Magisk Native 补丁
+
+`ksu/oplus_lhdcv5_native_patch/` 放置了一个可选的 KernelSU / Magisk 兼容模块源码，用于处理部分 OPlus / ColorOS 蓝牙栈故意忽略 LHDC V5 固定 900 / 1000 kbps 目标码率的问题。它不是 LSPosed APK 的一部分，也不会随 APK 发布工作流自动上传。
+
+这个补丁模块不内置任何设备上的 `libbluetooth_jni.so`。刷入时它会读取当前系统的 `/system/lib64/libbluetooth_jni.so`，只有在已知原始字节特征唯一命中时才复制到模块 overlay 路径并现场改 4 字节；匹配不到或命中过多会直接中止安装，避免误修补其他 ROM 布局。安装信息会写入 `/data/adb/modules/oplus_lhdcv5_native_patch/patch-info.txt`，开机后也会通过 `OPlusLHDCV5Patch` logcat 标签输出。
+
+打包时从源码目录生成 zip：
+
+```bash
+cd ksu/oplus_lhdcv5_native_patch
+zip -r ../../OPlus-LHDCV5-Native-Patch-0.3-dynamic-test.zip .
+```
+
+请确认 zip 内路径使用 `/` 分隔，例如 `META-INF/com/google/android/updater-script`。不要使用会生成 `META-INF\com\...` 这类反斜杠 entry 的打包方式；这类包可能仍能挂载成功，但在 KernelSU / Magisk 管理器里会显示异常路径。
+
+发布时当前仓库只自动构建和上传 LSPosed APK。KSU native patch zip 需要手动打包后作为额外附件上传到 GitHub Release。
+
 ## 日志排查
 
 调试时可以抓取：
@@ -184,6 +202,7 @@ GitHub Actions 分为两个入口：
 
 - `Build APK`：推送 `main` / `master`、PR 或手动触发时执行，用于日常开发构建，产物名带 `dev` 和提交号。
 - `Release APK`：仅手动触发。它会按 patch / minor / major 或指定版本号自动抬升 `versionName` 和 `versionCode`，构建签名 APK，提交版本号变更，创建符合 Xposed Modules Repo 规则的 `versionCode-versionName` tag（例如 `4-1.2.0`），并在 GitHub Release 中写入手填说明和自动生成的提交记录。发布工作流还会把源码、tag 和 APK Release 自动同步到 `Xposed-Modules-Repo/xyz.melodylsp.codec`，需要在源仓库配置 `LSP_REPO_TOKEN` secret。
+- KSU / Magisk native patch 目前不走 GitHub Actions 自动打包；需要从 `ksu/oplus_lhdcv5_native_patch/` 手动生成 zip，并在 Release 页面作为额外附件上传。
 
 ## 项目结构
 
@@ -206,6 +225,12 @@ app/src/main/
     ├── system/      # com.android.bluetooth 侧 bridge
     ├── ui/          # 模块内置诊断页和总开关
     └── util/        # 日志
+
+ksu/oplus_lhdcv5_native_patch/
+├── META-INF/com/google/android/updater-script
+├── customize.sh    # 安装时动态修补当前系统 libbluetooth_jni.so
+├── module.prop
+└── service.sh      # 开机后输出 patch-info 到 logcat
 ```
 
 ## 许可

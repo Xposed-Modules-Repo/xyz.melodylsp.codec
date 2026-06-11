@@ -1,0 +1,6 @@
+id=oplus_lhdcv5_native_patch
+name=OPlus LHDC V5 Native Bitrate Patch
+version=0.3-dynamic-test
+versionCode=3
+author=Andrea-lyz
+description=Install-time patch for OPlus/ColorOS libbluetooth_jni.so. Copies the current system library and patches the LHDC V5 target bitrate branch when a known byte pattern is found.
