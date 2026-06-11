@@ -188,12 +188,20 @@ evt=lhdc.memory_patch status=patched ... success=true
 evt=lhdc.memory_patch status=already_patched ... success=true
 ```
 
-实测补丁生效后，LHDC V5 音质优先可稳定进入约 1000 kbps 档位，蓝牙栈日志会出现 `quality_mode=HIGH1_1000(8)`，切换后不会回落到自适应。
+实测补丁生效后，LHDC V5 音质优先可稳定进入约 1000 kbps 档位，蓝牙栈在重新配置 encoder 时会出现 `quality_mode=HIGH1_1000(8)`，切换后不会回落到自适应。
 
-如果只是想确认当前正在播放时是否跑在 1000 kbps，更推荐看蓝牙 encoder 日志：
+如果想验证 1000 kbps，请先开实时监听，再触发一次 A2DP 重新协商，例如在模块里切到自适应后再切回音质优先，或者重连耳机。不要只在稳定播放中用 `logcat -d` 查询；encoder 不会持续输出当前码率。
 
 ```powershell
-adb logcat -d -v time -s a2dp_vendor_lhdcv5_encoder:D soc_bta_av:D bluetooth-a2dp:I | Select-String "quality_mode=HIGH1_1000|target bit rate: 8|max bit rate: 8|codec_specific_1: 32776"
+adb logcat -c
+adb logcat -v time -b all | Select-String "quality_mode=HIGH1_1000|target bit rate: 8|max bit rate: 8|codec_specific_1: 32776|ignore target bitrate|write.timeout"
+```
+
+Git Bash / macOS / Linux：
+
+```bash
+adb logcat -c
+adb logcat -v time -b all | grep -E 'quality_mode=HIGH1_1000|target bit rate: 8|max bit rate: 8|codec_specific_1: 32776|ignore target bitrate|write.timeout'
 ```
 
 ### 已过时的 KernelSU / Magisk Native 补丁
