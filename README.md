@@ -153,10 +153,16 @@ LHDC 的实时切换更依赖厂商蓝牙栈。模块会直接写入目标播放
 - 写入后立即回读验证，并恢复原内存页权限。
 - 不替换系统文件，不复制系统库，不创建 KernelSU / Magisk mount。
 
-可通过 logcat 确认补丁状态：
+可通过 logcat 确认补丁状态。补丁日志只在蓝牙进程启动或重试补丁时输出一次，建议先读取当前 logcat 缓冲区：
+
+```powershell
+adb logcat -d -s MelodyCodecLsp:V LSPosedFramework:I | Select-String "lhdc.memory_patch"
+```
+
+Git Bash / macOS / Linux 可以用：
 
 ```bash
-adb logcat -s MelodyCodecLsp:V | grep lhdc.memory_patch
+adb logcat -d -s MelodyCodecLsp:V LSPosedFramework:I | grep 'lhdc.memory_patch'
 ```
 
 成功时通常能看到：
@@ -171,6 +177,8 @@ evt=lhdc.memory_patch status=patched ... success=true
 ```text
 evt=lhdc.memory_patch status=already_patched ... success=true
 ```
+
+如果没有输出，通常是日志缓冲区已经被清掉，或蓝牙进程启动时没有抓到这段日志。可以先打开实时监听，再重启蓝牙相关进程或直接重启手机。
 
 实测补丁生效后，LHDC V5 音质优先可稳定进入约 1000 kbps 档位，蓝牙栈日志会出现 `quality_mode=HIGH1_1000(8)`，切换后不会回落到自适应。
 
