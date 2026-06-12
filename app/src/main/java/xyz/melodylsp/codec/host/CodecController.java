@@ -73,8 +73,6 @@ public final class CodecController {
             "android.bluetooth.a2dp.profile.action.CODEC_CONFIG_CHANGED";
     private static final String ACTION_CONNECTION_STATE_CHANGED =
             "android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED";
-    private static final String ACTION_ACTIVE_DEVICE_CHANGED =
-            "android.bluetooth.a2dp.profile.action.ACTIVE_DEVICE_CHANGED";
     private static final String EXTRA_CONNECTION_STATE = "android.bluetooth.profile.extra.STATE";
     private static final int SAMPLE_RATE_48000_BIT = 0x2;
     private static final int SAMPLE_RATE_96000_BIT = 0x8;
@@ -88,8 +86,6 @@ public final class CodecController {
     private static final long AAC_HIGH_QUALITY_WARMUP_DELAY_MS = 650L;
     private static final String STATE_RESTORING_CLASSIC =
             "\u6b63\u5728\u6062\u590d\u7ecf\u5178\u84dd\u7259\u97f3\u9891...";
-    private static final String STATE_A2DP_WAITING =
-            "\u7b49\u5f85\u8033\u673a\u5c31\u7eea";
 
     private final Context context;
     private final BluetoothCodecReflect reflect;
@@ -2036,10 +2032,6 @@ public final class CodecController {
             renderLeAudioActive(sub);
             return;
         }
-        if (Boolean.FALSE.equals(sub.a2dpActive)) {
-            renderA2dpWaiting(sub);
-            return;
-        }
         sub.renderedLeAudioActive = false;
         clearClassicRestorePending(sub.mac);
         if (Boolean.FALSE.equals(sub.connected)) {
@@ -2068,26 +2060,6 @@ public final class CodecController {
         if (sub.prefs.rememberToggle != null) {
             PrefRef.setChecked(sub.prefs.rememberToggle, prefs.isRemembered(sub.mac));
         }
-    }
-
-    private void renderA2dpWaiting(Subscription sub) {
-        if (sub == null || sub.prefs == null) return;
-        sub.connected = Boolean.TRUE;
-        sub.renderedLeAudioActive = false;
-        if (sub.prefs.codecDisplay != null) {
-            PrefRef.setTitle(sub.prefs.codecDisplay,
-                    Strings.CODEC_BLOCK_TITLE + " : " + STATE_A2DP_WAITING);
-        }
-        PrefRef.setSummary(sub.prefs.qualityOption, STATE_A2DP_WAITING);
-        PrefRef.setSummary(sub.prefs.sampleRateOption, STATE_A2DP_WAITING);
-        PrefRef.setVisible(sub.prefs.codecModeOption, false);
-        PrefRef.setVisible(sub.prefs.qualityOption, true);
-        PrefRef.setVisible(sub.prefs.sampleRateOption, true);
-        setBlockDisabled(sub, true);
-        if (sub.prefs.rememberToggle != null) {
-            PrefRef.setChecked(sub.prefs.rememberToggle, prefs.isRemembered(sub.mac));
-        }
-        applyLeAudioToSwitch(sub);
     }
 
     private boolean shouldRenderLeAudioActive(Subscription sub) {
@@ -2504,7 +2476,6 @@ public final class CodecController {
         final Object fragment;
         BroadcastReceiver receiver;
         Boolean connected;
-        Boolean a2dpActive;
         boolean renderedLeAudioActive;
         java.lang.ref.WeakReference<Activity> hostActivity;
 
@@ -2532,7 +2503,6 @@ public final class CodecController {
                                     return;
                                 }
                                 connected = Boolean.FALSE;
-                                a2dpActive = Boolean.FALSE;
                                 lastSnapshot.set(null);
                                 renderUnknown(Subscription.this);
                             });
@@ -2540,7 +2510,6 @@ public final class CodecController {
                         }
                         if (state == BluetoothProfile.STATE_CONNECTED) {
                             connected = Boolean.TRUE;
-                            a2dpActive = null;
                         }
                         refreshSnapshot(Subscription.this);
                         if (state == BluetoothProfile.STATE_CONNECTED) {
@@ -2554,22 +2523,12 @@ public final class CodecController {
                             return;
                         }
                         refreshSnapshot(Subscription.this);
-                    } else if (ACTION_ACTIVE_DEVICE_CHANGED.equals(action)) {
-                        boolean active = activeDeviceMatchesSubscription(intent);
-                        a2dpActive = active;
-                        if (active) {
-                            refreshSnapshot(Subscription.this);
-                            refreshSnapshotDelayed(Subscription.this, 1200L);
-                        } else {
-                            renderA2dpWaiting(Subscription.this);
-                        }
                     }
                 }
             };
             IntentFilter filter = new IntentFilter();
             filter.addAction(ACTION_CODEC_CONFIG_CHANGED);
             filter.addAction(ACTION_CONNECTION_STATE_CHANGED);
-            filter.addAction(ACTION_ACTIVE_DEVICE_CHANGED);
             try {
                 context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
             } catch (Throwable t) {
@@ -2586,18 +2545,6 @@ public final class CodecController {
                 return address == null || address.equalsIgnoreCase(mac);
             } catch (Throwable t) {
                 return true;
-            }
-        }
-
-        @SuppressWarnings("deprecation")
-        private boolean activeDeviceMatchesSubscription(Intent intent) {
-            try {
-                BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
-                if (device == null) return false;
-                String address = device.getAddress();
-                return address != null && address.equalsIgnoreCase(mac);
-            } catch (Throwable t) {
-                return false;
             }
         }
 

@@ -53,7 +53,6 @@ public final class CodecBridgeClient {
             "android.bluetooth.a2dp.profile.action.CODEC_CONFIG_CHANGED";
     private static final long DEFAULT_CONFIRM_TIMEOUT_MS = 3_000L;
     private static final long LHDC_CONFIRM_TIMEOUT_MS = 5_000L;
-    private static final long CONFIRM_POLL_INTERVAL_MS = 700L;
     private static final long OPTIONAL_CONFIRM_TIMEOUT_MS = 4_000L;
     private static final long CODEC_BROADCAST_TIMEOUT_MS = 1_500L;
 
@@ -714,49 +713,26 @@ public final class CodecBridgeClient {
             }
         };
         receiverRef.set(receiver);
-        long startedAtMs = System.currentTimeMillis();
-        long timeoutMs = confirmTimeoutMs(request);
-        IntentFilter filter = new IntentFilter(ACTION_CODEC_CONFIG_CHANGED);
         try {
-            context.registerReceiver(receiver, filter, null, statusHandler,
+            context.registerReceiver(receiver, new IntentFilter(ACTION_CODEC_CONFIG_CHANGED),
                     Context.RECEIVER_EXPORTED);
         } catch (Throwable t) {
             // RECEIVER_EXPORTED constant only required on T+; fall back to legacy registration.
-            context.registerReceiver(receiver, filter, null, statusHandler);
+            context.registerReceiver(receiver, new IntentFilter(ACTION_CODEC_CONFIG_CHANGED));
         }
 
-        scheduleConfirmationPoll(
-                future, receiverRef, request, path, startedAtMs, timeoutMs);
-
-        return future;
-    }
-
-    private void scheduleConfirmationPoll(
-            CompletableFuture<WriteResult> future,
-            AtomicReference<BroadcastReceiver> receiverRef,
-            CodecRequest request,
-            WriteResult.Path path,
-            long startedAtMs,
-            long timeoutMs) {
-        statusHandler.postDelayed(() -> {
+        mainHandler.postDelayed(() -> {
             if (future.isDone()) return;
             CodecSnapshot s = safeReadStatus(request.mac);
             if (s != null && matches(s, request)) {
                 completeWith(future, WriteResult.confirmed(path), receiverRef);
-                return;
-            }
-            long elapsedMs = System.currentTimeMillis() - startedAtMs;
-            if (elapsedMs >= timeoutMs) {
-                MLog.event("write.timeout",
-                        "timeoutMs", timeoutMs,
-                        "request", request,
-                        "live", String.valueOf(s));
+            } else {
+                MLog.event("write.timeout", "request", request, "live", String.valueOf(s));
                 completeWith(future, WriteResult.rolledBack(path, s), receiverRef);
-                return;
             }
-            scheduleConfirmationPoll(
-                    future, receiverRef, request, path, startedAtMs, timeoutMs);
-        }, CONFIRM_POLL_INTERVAL_MS);
+        }, confirmTimeoutMs(request));
+
+        return future;
     }
 
     private static long confirmTimeoutMs(CodecRequest request) {
