@@ -92,6 +92,7 @@ public final class CodecController {
     private final CodecBridgeClient bridge;
     private final PreferenceStore prefs;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final A2dpRouteReadiness routeReadiness;
     private final ConnectionStateReplayer replayer;
     private final SurfaceRescanRequester surfaceRescanRequester;
     private final Map<Object, Subscription> subscriptions = new HashMap<>();
@@ -117,7 +118,9 @@ public final class CodecController {
         this.bridge = bridge;
         this.prefs = prefs;
         this.surfaceRescanRequester = surfaceRescanRequester;
-        this.replayer = new ConnectionStateReplayer(this.context, bridge, prefs);
+        this.routeReadiness = new A2dpRouteReadiness(this.context);
+        this.replayer = new ConnectionStateReplayer(
+                this.context, bridge, prefs, routeReadiness);
         this.replayer.start();
         this.bridge.addSnapshotListener(this::onPushedSnapshot);
         this.leAudioManager = new xyz.melodylsp.codec.leaudio.LeAudioManager(
@@ -887,6 +890,7 @@ public final class CodecController {
      * background so OPPO's slow optional confirmation path never blocks the visible switch.
      */
     private void showCodecModePicker(Subscription sub, Object sourcePref) {
+        if (!ensureA2dpReadyForUser(sub)) return;
         CodecSnapshot snapshot = lastSnapshot.get();
         if (snapshot == null) {
             Toast.makeText(context, Strings.STATE_CODEC_UNKNOWN, Toast.LENGTH_SHORT).show();
@@ -964,6 +968,7 @@ public final class CodecController {
      * (vendor codec quirk on every OPPO LHDC variant).
      */
     private void showQualityPicker(Subscription sub, Object sourcePref) {
+        if (!ensureA2dpReadyForUser(sub)) return;
         CodecSnapshot snapshot = lastSnapshot.get();
         if (snapshot == null) {
             Toast.makeText(context, Strings.STATE_CODEC_UNKNOWN, Toast.LENGTH_SHORT).show();
@@ -1023,6 +1028,7 @@ public final class CodecController {
     }
 
     private void showSampleRatePicker(Subscription sub, Object sourcePref) {
+        if (!ensureA2dpReadyForUser(sub)) return;
         CodecSnapshot snapshot = lastSnapshot.get();
         if (snapshot == null) {
             Toast.makeText(context, Strings.STATE_CODEC_UNKNOWN, Toast.LENGTH_SHORT).show();
@@ -1559,11 +1565,29 @@ public final class CodecController {
         prefs.setRemembered(sub.mac, enabled);
         if (enabled) {
             CodecSnapshot s = lastSnapshot.get();
-            if (s != null && s.mac != null && s.mac.equals(sub.mac)) {
+            boolean a2dpReady = isA2dpReadyOrUnknown(sub);
+            if (a2dpReady && s != null && s.mac != null && s.mac.equals(sub.mac)) {
                 prefs.writeSnapshot(sub.mac, s.activeCodecSpecific1, s.activeSampleRate);
+            } else if (!a2dpReady) {
+                MLog.event("remember.write.skip",
+                        "reason", "a2dp_waiting",
+                        "mac", A2dpRouteReadiness.redactMac(sub.mac));
             }
         }
         return true;
+    }
+
+    private boolean ensureA2dpReadyForUser(Subscription sub) {
+        if (isA2dpReadyOrUnknown(sub)) return true;
+        renderA2dpWaiting(sub);
+        Toast.makeText(context, Strings.TOAST_A2DP_WAITING, Toast.LENGTH_SHORT).show();
+        MLog.event("a2dp.waiting.user",
+                "mac", A2dpRouteReadiness.redactMac(sub != null ? sub.mac : null));
+        return false;
+    }
+
+    private boolean isA2dpReadyOrUnknown(Subscription sub) {
+        return sub == null || routeReadiness.isReadyOrUnknown(sub.mac);
     }
 
     private void applyWrite(Subscription sub, CodecRequest request) {
@@ -1588,6 +1612,14 @@ public final class CodecController {
             WriteFailureHandler failureHandler,
             long generation,
             WriteSuccessHandler successHandler) {
+        if (!isA2dpReadyOrUnknown(sub)) {
+            renderA2dpWaiting(sub);
+            Toast.makeText(context, Strings.TOAST_A2DP_WAITING, Toast.LENGTH_SHORT).show();
+            MLog.event("write.skip.a2dp_waiting",
+                    "generation", generation,
+                    "request", request);
+            return;
+        }
         bridge.setCodec(request, () -> isCurrentCodecWrite(sub, generation))
                 .whenComplete((result, ex) -> mainHandler.post(() -> {
             if (!isCurrentCodecWrite(sub, generation)) {
@@ -1660,6 +1692,7 @@ public final class CodecController {
     }
 
     private void applyOptionalCodecWrite(Subscription sub, boolean enable) {
+        if (!ensureA2dpReadyForUser(sub)) return;
         setCodecModeStatus(sub, Strings.STATE_SWITCHING_CODEC);
         setBlockDisabled(sub, true);
         long generation = nextCodecWriteGeneration(sub);
@@ -2007,6 +2040,10 @@ public final class CodecController {
             return;
         }
         boolean connected = Boolean.TRUE.equals(sub.connected);
+        if (connected && !isA2dpReadyOrUnknown(sub)) {
+            renderA2dpWaiting(sub);
+            return;
+        }
         String state = connected ? Strings.STATE_CODEC_UNKNOWN : Strings.STATE_NO_DEVICE;
         if (sub.prefs.codecDisplay != null) {
             PrefRef.setTitle(sub.prefs.codecDisplay,
@@ -2018,6 +2055,26 @@ public final class CodecController {
         PrefRef.setVisible(sub.prefs.qualityOption, true);
         PrefRef.setVisible(sub.prefs.sampleRateOption, true);
         setBlockDisabled(sub, true);
+        if (sub.prefs.rememberToggle != null) {
+            PrefRef.setChecked(sub.prefs.rememberToggle, prefs.isRemembered(sub.mac));
+        }
+        applyLeAudioToSwitch(sub);
+    }
+
+    private void renderA2dpWaiting(Subscription sub) {
+        if (sub == null || sub.prefs == null) return;
+        sub.connected = Boolean.TRUE;
+        sub.renderedLeAudioActive = false;
+        if (sub.prefs.codecDisplay != null) {
+            PrefRef.setTitle(sub.prefs.codecDisplay,
+                    Strings.CODEC_BLOCK_TITLE + " : " + Strings.STATE_A2DP_WAITING);
+        }
+        PrefRef.setVisible(sub.prefs.codecModeOption, false);
+        PrefRef.setVisible(sub.prefs.qualityOption, true);
+        PrefRef.setVisible(sub.prefs.sampleRateOption, true);
+        PrefRef.setSummary(sub.prefs.qualityOption, Strings.STATE_A2DP_WAITING);
+        PrefRef.setSummary(sub.prefs.sampleRateOption, Strings.STATE_A2DP_WAITING);
+        setBlockDisabled(sub, false);
         if (sub.prefs.rememberToggle != null) {
             PrefRef.setChecked(sub.prefs.rememberToggle, prefs.isRemembered(sub.mac));
         }
@@ -2036,6 +2093,10 @@ public final class CodecController {
         clearClassicRestorePending(sub.mac);
         if (Boolean.FALSE.equals(sub.connected)) {
             renderUnknown(sub);
+            return;
+        }
+        if (!isA2dpReadyOrUnknown(sub)) {
+            renderA2dpWaiting(sub);
             return;
         }
         String codecName = CodecLabelTable.codecLabel(
@@ -2523,12 +2584,26 @@ public final class CodecController {
                             return;
                         }
                         refreshSnapshot(Subscription.this);
+                    } else if (A2dpRouteReadiness.ACTION_ACTIVE_DEVICE_CHANGED.equals(action)) {
+                        boolean ready = routeReadiness.updateFromActiveDeviceIntent(intent, mac);
+                        if (ready) {
+                            refreshSnapshot(Subscription.this);
+                            refreshSnapshotDelayed(Subscription.this, 700L);
+                            refreshSnapshotDelayed(Subscription.this, 1600L);
+                        } else {
+                            mainHandler.post(() -> {
+                                if (Boolean.TRUE.equals(connected)) {
+                                    renderA2dpWaiting(Subscription.this);
+                                }
+                            });
+                        }
                     }
                 }
             };
             IntentFilter filter = new IntentFilter();
             filter.addAction(ACTION_CODEC_CONFIG_CHANGED);
             filter.addAction(ACTION_CONNECTION_STATE_CHANGED);
+            filter.addAction(A2dpRouteReadiness.ACTION_ACTIVE_DEVICE_CHANGED);
             try {
                 context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
             } catch (Throwable t) {
