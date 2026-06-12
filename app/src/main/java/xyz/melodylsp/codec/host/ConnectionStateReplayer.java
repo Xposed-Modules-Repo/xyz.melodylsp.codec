@@ -1,5 +1,6 @@
 package xyz.melodylsp.codec.host;
 
+import android.app.Application;
 import android.bluetooth.BluetoothDevice;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -36,6 +37,8 @@ public final class ConnectionStateReplayer {
     private final CodecBridgeClient bridge;
     private final PreferenceStore prefs;
     private final A2dpRouteReadiness routeReadiness;
+    private final String processName;
+    private final boolean replayEnabled;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Map<String, PreferenceStore.RememberedValue> pendingReplays = new HashMap<>();
     private final Map<String, Long> replayGenerations = new HashMap<>();
@@ -51,6 +54,8 @@ public final class ConnectionStateReplayer {
         this.bridge = bridge;
         this.prefs = prefs;
         this.routeReadiness = routeReadiness;
+        this.processName = resolveProcessName(this.context);
+        this.replayEnabled = isReplayOwnerProcess(this.context, processName);
     }
 
     public void start() {
@@ -83,7 +88,9 @@ public final class ConnectionStateReplayer {
         } catch (Throwable t) {
             context.registerReceiver(receiver, filter);
         }
-        MLog.d("ConnectionStateReplayer started");
+        MLog.event("replay.receiver.started",
+                "process", processName,
+                "replay", replayEnabled);
     }
 
     public void stop() {
@@ -99,6 +106,12 @@ public final class ConnectionStateReplayer {
         String key = A2dpRouteReadiness.normalizeMac(mac);
         if (key == null) return;
         routeReadiness.markConnected(key);
+        if (!replayEnabled) {
+            MLog.event("replay.skip.process",
+                    "mac", A2dpRouteReadiness.redactMac(key),
+                    "process", processName);
+            return;
+        }
         if (!prefs.isRemembered(key)) {
             MLog.d("connected mac=" + A2dpRouteReadiness.redactMac(key)
                     + " remember=false; no replay");
@@ -144,6 +157,7 @@ public final class ConnectionStateReplayer {
         String key = A2dpRouteReadiness.normalizeMac(device.getAddress());
         if (key == null) return;
         routeReadiness.markReady(key, "replay.active_broadcast");
+        if (!replayEnabled) return;
         PreferenceStore.RememberedValue pending;
         synchronized (this) {
             pending = pendingReplays.remove(key);
@@ -158,6 +172,7 @@ public final class ConnectionStateReplayer {
             PreferenceStore.RememberedValue stored,
             long delayMs,
             String reason) {
+        if (!replayEnabled) return;
         long generation;
         synchronized (this) {
             generation = bumpGenerationLocked(mac);
@@ -211,6 +226,7 @@ public final class ConnectionStateReplayer {
     }
 
     private void replay(String mac, PreferenceStore.RememberedValue stored) {
+        if (!replayEnabled) return;
         if (!routeReadiness.isReadyOrUnknown(mac)) {
             synchronized (this) {
                 pendingReplays.put(mac, stored);
@@ -277,5 +293,39 @@ public final class ConnectionStateReplayer {
         if ((mask & value) != 0) return true;
         return CodecLabelTable.isLhdc(live.activeCodecType)
                 && (value == 0x2 || value == 0x8 || value == 0x20);
+    }
+
+    private static String resolveProcessName(Context context) {
+        try {
+            String name = Application.getProcessName();
+            if (name != null && !name.isEmpty()) return name;
+        } catch (Throwable ignored) {
+        }
+        try {
+            Class<?> cls = Class.forName("android.app.ActivityThread");
+            Object value = cls.getMethod("currentProcessName").invoke(null);
+            if (value instanceof String && !((String) value).isEmpty()) return (String) value;
+        } catch (Throwable ignored) {
+        }
+        try {
+            return context != null ? context.getPackageName() : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static boolean isReplayOwnerProcess(Context context, String processName) {
+        if (processName == null || processName.isEmpty()) return true;
+        String packageName;
+        try {
+            packageName = context != null ? context.getPackageName() : null;
+        } catch (Throwable ignored) {
+            packageName = null;
+        }
+        if (packageName == null || packageName.isEmpty()) return true;
+        if ((packageName + ":fg").equals(processName)) return true;
+        if (packageName.equals(processName)) return false;
+        if (processName.startsWith(packageName + ":")) return processName.endsWith(":fg");
+        return true;
     }
 }

@@ -27,53 +27,70 @@ public final class PreferenceStore {
     private static final String KEY_SPECIFIC1_SUFFIX = "_specific1";
     private static final String KEY_SAMPLERATE_SUFFIX = "_samplerate";
 
-    private final SharedPreferences melodyPrefs;
+    private final Context hostContext;
 
     public PreferenceStore(Context hostContext) {
-        this.melodyPrefs = hostContext.getSharedPreferences(MELODY_PREFS, Context.MODE_PRIVATE);
+        this.hostContext = hostContext.getApplicationContext();
     }
 
     public boolean isRemembered(String mac) {
         if (mac == null) return false;
-        return melodyPrefs.getBoolean(mac + KEY_REMEMBER_SUFFIX, false);
+        return prefs().getBoolean(mac + KEY_REMEMBER_SUFFIX, false);
     }
 
     public void setRemembered(String mac, boolean remembered) {
         if (mac == null) return;
-        SharedPreferences.Editor editor = melodyPrefs.edit();
+        SharedPreferences.Editor editor = prefs().edit();
         editor.putBoolean(mac + KEY_REMEMBER_SUFFIX, remembered);
         if (!remembered) {
             // Snapshot keys must vanish atomically with the toggle (Property 9).
             editor.remove(mac + KEY_SPECIFIC1_SUFFIX);
             editor.remove(mac + KEY_SAMPLERATE_SUFFIX);
         }
-        editor.apply();
+        if (!editor.commit()) {
+            MLog.w("remember.set commit failed mac=" + redact(mac));
+        }
         MLog.event("remember.set", "mac", redact(mac), "remembered", remembered);
     }
 
     public RememberedValue readSnapshot(String mac) {
-        if (mac == null || !isRemembered(mac)) return null;
-        if (!melodyPrefs.contains(mac + KEY_SPECIFIC1_SUFFIX)
-                || !melodyPrefs.contains(mac + KEY_SAMPLERATE_SUFFIX)) {
+        if (mac == null) return null;
+        SharedPreferences sp = prefs();
+        if (!sp.getBoolean(mac + KEY_REMEMBER_SUFFIX, false)) return null;
+        if (!sp.contains(mac + KEY_SPECIFIC1_SUFFIX)
+                || !sp.contains(mac + KEY_SAMPLERATE_SUFFIX)) {
             return null;
         }
-        long specific1 = melodyPrefs.getLong(mac + KEY_SPECIFIC1_SUFFIX, -1L);
-        int sampleRate = melodyPrefs.getInt(mac + KEY_SAMPLERATE_SUFFIX, -1);
+        long specific1 = sp.getLong(mac + KEY_SPECIFIC1_SUFFIX, -1L);
+        int sampleRate = sp.getInt(mac + KEY_SAMPLERATE_SUFFIX, -1);
         return new RememberedValue(specific1, sampleRate);
     }
 
     public void writeSnapshot(String mac, long codecSpecific1, int sampleRate) {
         if (mac == null) return;
-        if (!isRemembered(mac)) {
+        SharedPreferences sp = prefs();
+        if (!sp.getBoolean(mac + KEY_REMEMBER_SUFFIX, false)) {
             MLog.w("writeSnapshot ignored, remember=false mac=" + redact(mac));
             return;
         }
-        melodyPrefs.edit()
+        boolean committed = sp.edit()
                 .putLong(mac + KEY_SPECIFIC1_SUFFIX, codecSpecific1)
                 .putInt(mac + KEY_SAMPLERATE_SUFFIX, sampleRate)
-                .apply();
+                .commit();
+        if (!committed) {
+            MLog.w("remember.write commit failed mac=" + redact(mac));
+        }
         MLog.event("remember.write",
                 "mac", redact(mac), "specific1", codecSpecific1, "rate", sampleRate);
+    }
+
+    private SharedPreferences prefs() {
+        return hostContext.getSharedPreferences(MELODY_PREFS, preferencesMode());
+    }
+
+    @SuppressWarnings("deprecation")
+    private static int preferencesMode() {
+        return Context.MODE_PRIVATE | Context.MODE_MULTI_PROCESS;
     }
 
     private static String redact(String mac) {
