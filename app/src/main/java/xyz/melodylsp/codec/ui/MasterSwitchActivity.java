@@ -3,12 +3,15 @@ package xyz.melodylsp.codec.ui;
 import android.app.Activity;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
@@ -60,7 +63,7 @@ public final class MasterSwitchActivity extends Activity {
         super.onCreate(savedInstanceState);
         modulePrefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         diagPrefs = getSharedPreferences(DiagnosticEvents.PREFS, Context.MODE_PRIVATE);
-        applyLauncherIconState(modulePrefs.getBoolean(KEY_HIDE_LAUNCHER_ICON, false));
+        applyLauncherIconState(modulePrefs.getBoolean(KEY_HIDE_LAUNCHER_ICON, false), false);
 
         if (Build.VERSION.SDK_INT >= 21) {
             getWindow().setStatusBarColor(BG);
@@ -273,26 +276,61 @@ public final class MasterSwitchActivity extends Activity {
 
     private void onHideLauncherChanged(CompoundButton buttonView, boolean hidden) {
         modulePrefs.edit().putBoolean(KEY_HIDE_LAUNCHER_ICON, hidden).apply();
-        applyLauncherIconState(hidden);
+        boolean applied = applyLauncherIconState(hidden, true);
         Toast.makeText(this,
-                hidden ? "桌面图标已隐藏" : "桌面图标已恢复",
+                applied
+                        ? (hidden ? "桌面图标已隐藏" : "桌面图标已恢复")
+                        : "桌面图标状态更新失败",
                 Toast.LENGTH_SHORT).show();
         refresh();
     }
 
-    private void applyLauncherIconState(boolean hidden) {
+    private boolean applyLauncherIconState(boolean hidden, boolean notifyLauncher) {
         try {
             ComponentName alias = new ComponentName(this, LAUNCHER_ALIAS);
             int state = hidden
                     ? PackageManager.COMPONENT_ENABLED_STATE_DISABLED
                     : PackageManager.COMPONENT_ENABLED_STATE_ENABLED;
+            int flags = PackageManager.DONT_KILL_APP;
+            if (Build.VERSION.SDK_INT >= 29) {
+                flags |= PackageManager.SYNCHRONOUS;
+            }
             getPackageManager().setComponentEnabledSetting(
                     alias,
                     state,
-                    PackageManager.DONT_KILL_APP);
+                    flags);
+            if (notifyLauncher) notifyLauncherChanged(alias);
+            return true;
         } catch (Throwable t) {
             Toast.makeText(this, "无法更新桌面图标状态：" + t.getMessage(),
                     Toast.LENGTH_LONG).show();
+            return false;
+        }
+    }
+
+    private void notifyLauncherChanged(ComponentName alias) {
+        try {
+            Intent changed = new Intent(Intent.ACTION_PACKAGE_CHANGED);
+            changed.setData(Uri.fromParts("package", getPackageName(), null));
+            changed.putExtra(Intent.EXTRA_CHANGED_COMPONENT_NAME_LIST,
+                    new String[]{alias.flattenToString()});
+            changed.putExtra(Intent.EXTRA_DONT_KILL_APP, true);
+            String launcher = defaultLauncherPackage();
+            if (launcher != null && !launcher.isEmpty()) changed.setPackage(launcher);
+            sendBroadcast(changed);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private String defaultLauncherPackage() {
+        try {
+            Intent home = new Intent(Intent.ACTION_MAIN);
+            home.addCategory(Intent.CATEGORY_HOME);
+            ResolveInfo info = getPackageManager().resolveActivity(home, 0);
+            if (info == null || info.activityInfo == null) return "";
+            return info.activityInfo.packageName;
+        } catch (Throwable ignored) {
+            return "";
         }
     }
 

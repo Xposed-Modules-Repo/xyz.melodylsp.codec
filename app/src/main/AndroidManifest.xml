@@ -35,7 +35,12 @@
 
         <activity
             android:name=".ui.MasterSwitchActivity"
-            android:exported="true" />
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />
+            </intent-filter>
+        </activity>
 
         <activity-alias
             android:name=".ui.LauncherActivity"
