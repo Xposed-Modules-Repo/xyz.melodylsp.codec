@@ -30,14 +30,20 @@ import xyz.melodylsp.codec.BuildConfig;
 final class NativeLhdcMemoryPatch {
 
     private static final String LIB_NAME = "libbluetooth_jni.so";
-    private static final byte[] ORIGINAL = hex(
-            "1f0900f1a2080054e83d80529b008052");
-    private static final byte[] PATCHED = hex(
-            "1f0900f145000014e83d80529b008052");
-    private static final byte[] PATCH_BYTES = new byte[]{
-            (byte) 0x45, 0x00, 0x00, 0x14
+    private static final PatternSpec[] PATTERN_SPECS = {
+            new PatternSpec(
+                    "branch_plus_69",
+                    hex("1f0900f1a2080054e83d80529b008052"),
+                    hex("1f0900f145000014e83d80529b008052"),
+                    4,
+                    hex("45000014")),
+            new PatternSpec(
+                    "branch_plus_23_op15",
+                    hex("1f0900f1e2020054283d805299008052"),
+                    hex("1f0900f117000014283d805299008052"),
+                    4,
+                    hex("17000014")),
     };
-    private static final int PATCH_DELTA = 4;
     private static final int MAX_RANGE_BYTES = 64 * 1024 * 1024;
     private static volatile Method cachedStaticMprotect;
     private static volatile Object cachedLibcoreOs;
@@ -86,28 +92,36 @@ final class NativeLhdcMemoryPatch {
         Match original = null;
         int originalCount = 0;
         int patchedCount = 0;
+        String patchedSpec = "";
 
         for (MapRange range : ranges) {
             byte[] bytes = readRange(range);
             if (bytes == null) continue;
-            originalCount += countMatches(bytes, ORIGINAL);
-            patchedCount += countMatches(bytes, PATCHED);
-            if (original == null) {
-                int index = indexOf(bytes, ORIGINAL);
-                if (index >= 0) {
-                    original = new Match(range.start + index, range);
+            for (PatternSpec spec : PATTERN_SPECS) {
+                int rangeOriginalCount = countMatches(bytes, spec.original);
+                int rangePatchedCount = countMatches(bytes, spec.patched);
+                originalCount += rangeOriginalCount;
+                patchedCount += rangePatchedCount;
+                if (rangePatchedCount > 0 && patchedSpec.isEmpty()) {
+                    patchedSpec = spec.name;
+                }
+                if (original == null) {
+                    int index = indexOf(bytes, spec.original);
+                    if (index >= 0) {
+                        original = new Match(range.start + index, range, spec);
+                    }
                 }
             }
         }
 
         if (patchedCount == 1 && originalCount == 0) {
-            return PatchResult.alreadyPatched(patchedCount, originalCount);
+            return PatchResult.alreadyPatched(patchedCount, originalCount, patchedSpec);
         }
         if (originalCount != 1 || original == null) {
             return PatchResult.unsupported(patchedCount, originalCount);
         }
 
-        long patchAddress = original.address + PATCH_DELTA;
+        long patchAddress = original.address + original.spec.patchDelta;
         MapRange patchRange = findRange(ranges, patchAddress);
         if (patchRange == null) {
             return PatchResult.failed("patch_address_outside_mapping");
@@ -115,25 +129,25 @@ final class NativeLhdcMemoryPatch {
 
         int pageSize = pageSize();
         long pageStart = alignDown(patchAddress, pageSize);
-        long pageEnd = alignUp(patchAddress + PATCH_BYTES.length, pageSize);
+        long pageEnd = alignUp(patchAddress + original.spec.patchBytes.length, pageSize);
         long protectLength = pageEnd - pageStart;
 
         boolean protectionChanged = false;
         try {
             makeWritable(pageStart, protectLength, patchRange);
             protectionChanged = true;
-            writeMemory(patchAddress, PATCH_BYTES);
+            writeMemory(patchAddress, original.spec.patchBytes);
         } finally {
             if (protectionChanged) {
                 restoreProtection(pageStart, protectLength, patchRange);
             }
         }
 
-        byte[] verify = readMemory(original.address, PATCHED.length);
-        if (!equalsBytes(verify, PATCHED)) {
+        byte[] verify = readMemory(original.address, original.spec.patched.length);
+        if (!equalsBytes(verify, original.spec.patched)) {
             return PatchResult.failed("verify_failed");
         }
-        return PatchResult.patched(patchAddress, patchedCount, originalCount);
+        return PatchResult.patched(patchAddress, patchedCount, originalCount, original.spec.name);
     }
 
     private static List<MapRange> readLibraryMaps() throws IOException {
@@ -419,14 +433,21 @@ final class NativeLhdcMemoryPatch {
             this.success = success;
         }
 
-        static PatchResult patched(long address, int patchedCount, int originalCount) {
-            return new PatchResult("patched", "", address, patchedCount, originalCount,
-                    true, true);
+        static PatchResult patched(
+                long address,
+                int patchedCount,
+                int originalCount,
+                String pattern) {
+            return new PatchResult("patched", patternReason(pattern), address,
+                    patchedCount, originalCount, true, true);
         }
 
-        static PatchResult alreadyPatched(int patchedCount, int originalCount) {
-            return new PatchResult("already_patched", "", 0L, patchedCount, originalCount,
-                    true, true);
+        static PatchResult alreadyPatched(
+                int patchedCount,
+                int originalCount,
+                String pattern) {
+            return new PatchResult("already_patched", patternReason(pattern), 0L,
+                    patchedCount, originalCount, true, true);
         }
 
         static PatchResult unsupported(int patchedCount, int originalCount) {
@@ -447,15 +468,42 @@ final class NativeLhdcMemoryPatch {
         String addressHex() {
             return address == 0L ? "0x0" : "0x" + Long.toHexString(address);
         }
+
+        private static String patternReason(String pattern) {
+            return pattern == null || pattern.isEmpty() ? "" : "pattern=" + pattern;
+        }
     }
 
     private static final class Match {
         final long address;
         final MapRange range;
+        final PatternSpec spec;
 
-        Match(long address, MapRange range) {
+        Match(long address, MapRange range, PatternSpec spec) {
             this.address = address;
             this.range = range;
+            this.spec = spec;
+        }
+    }
+
+    private static final class PatternSpec {
+        final String name;
+        final byte[] original;
+        final byte[] patched;
+        final int patchDelta;
+        final byte[] patchBytes;
+
+        PatternSpec(
+                String name,
+                byte[] original,
+                byte[] patched,
+                int patchDelta,
+                byte[] patchBytes) {
+            this.name = name;
+            this.original = original;
+            this.patched = patched;
+            this.patchDelta = patchDelta;
+            this.patchBytes = patchBytes;
         }
     }
 

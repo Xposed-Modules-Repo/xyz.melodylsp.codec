@@ -24,8 +24,10 @@ public final class PreferenceStore {
     public static final String KEY_ENABLED = "enabled";
 
     private static final String KEY_REMEMBER_SUFFIX = "_remember";
+    private static final String KEY_CODEC_TYPE_SUFFIX = "_codec_type";
     private static final String KEY_SPECIFIC1_SUFFIX = "_specific1";
     private static final String KEY_SAMPLERATE_SUFFIX = "_samplerate";
+    private static final int CODEC_TYPE_UNKNOWN = -1;
 
     private final Context hostContext;
 
@@ -44,6 +46,7 @@ public final class PreferenceStore {
         editor.putBoolean(mac + KEY_REMEMBER_SUFFIX, remembered);
         if (!remembered) {
             // Snapshot keys must vanish atomically with the toggle (Property 9).
+            editor.remove(mac + KEY_CODEC_TYPE_SUFFIX);
             editor.remove(mac + KEY_SPECIFIC1_SUFFIX);
             editor.remove(mac + KEY_SAMPLERATE_SUFFIX);
         }
@@ -61,12 +64,13 @@ public final class PreferenceStore {
                 || !sp.contains(mac + KEY_SAMPLERATE_SUFFIX)) {
             return null;
         }
+        int codecType = sp.getInt(mac + KEY_CODEC_TYPE_SUFFIX, CODEC_TYPE_UNKNOWN);
         long specific1 = sp.getLong(mac + KEY_SPECIFIC1_SUFFIX, -1L);
         int sampleRate = sp.getInt(mac + KEY_SAMPLERATE_SUFFIX, -1);
-        return new RememberedValue(specific1, sampleRate);
+        return new RememberedValue(codecType, specific1, sampleRate);
     }
 
-    public void writeSnapshot(String mac, long codecSpecific1, int sampleRate) {
+    public void writeSnapshot(String mac, int codecType, long codecSpecific1, int sampleRate) {
         if (mac == null) return;
         SharedPreferences sp = prefs();
         if (!sp.getBoolean(mac + KEY_REMEMBER_SUFFIX, false)) {
@@ -74,6 +78,7 @@ public final class PreferenceStore {
             return;
         }
         boolean committed = sp.edit()
+                .putInt(mac + KEY_CODEC_TYPE_SUFFIX, codecType)
                 .putLong(mac + KEY_SPECIFIC1_SUFFIX, codecSpecific1)
                 .putInt(mac + KEY_SAMPLERATE_SUFFIX, sampleRate)
                 .commit();
@@ -81,7 +86,10 @@ public final class PreferenceStore {
             MLog.w("remember.write commit failed mac=" + redact(mac));
         }
         MLog.event("remember.write",
-                "mac", redact(mac), "specific1", codecSpecific1, "rate", sampleRate);
+                "mac", redact(mac),
+                "codec", codecType,
+                "specific1", codecSpecific1,
+                "rate", sampleRate);
     }
 
     private SharedPreferences prefs() {
@@ -100,10 +108,12 @@ public final class PreferenceStore {
 
     /** Snapshot returned to ConnectionStateReplayer / UI on a remember=true MAC. */
     public static final class RememberedValue {
+        public final int codecType;
         public final long codecSpecific1;
         public final int sampleRate;
 
-        public RememberedValue(long codecSpecific1, int sampleRate) {
+        public RememberedValue(int codecType, long codecSpecific1, int sampleRate) {
+            this.codecType = codecType;
             this.codecSpecific1 = codecSpecific1;
             this.sampleRate = sampleRate;
         }

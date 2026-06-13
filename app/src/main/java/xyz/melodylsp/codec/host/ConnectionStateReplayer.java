@@ -19,9 +19,9 @@ import xyz.melodylsp.codec.storage.PreferenceStore;
 import xyz.melodylsp.codec.util.MLog;
 
 /**
- * Watches A2DP connection events and replays the stored {@code <MAC>_specific1} /
- * {@code <MAC>_samplerate} when {@code Remember_Toggle=true}. Replays are skipped silently when
- * the persisted value is no longer in the freshly negotiated capabilities (Requirement 7.9).
+ * Watches A2DP connection events and replays the stored codec snapshot when
+ * {@code Remember_Toggle=true}. Replays are skipped silently when the persisted value is no longer
+ * in the freshly negotiated capabilities (Requirement 7.9).
  */
 public final class ConnectionStateReplayer {
 
@@ -242,12 +242,28 @@ public final class ConnectionStateReplayer {
             return;
         }
 
+        if (isStandardCodec(stored.codecType)) {
+            CodecRequest req = CodecRequest.fromActive(live)
+                    .codecType(stored.codecType)
+                    .codecSpecific1(0L)
+                    .codecSpecific2(0L)
+                    .codecSpecific3(0L)
+                    .codecSpecific4(0L)
+                    .sampleRate(0)
+                    .bitsPerSample(0)
+                    .channelMode(0)
+                    .build();
+            dispatchReplay(req);
+            return;
+        }
+
         boolean specific1Selectable = isSpecific1Selectable(live, stored.codecSpecific1);
         boolean sampleRateSelectable = isSampleRateSelectable(live, stored.sampleRate);
 
         if (!specific1Selectable && !sampleRateSelectable) {
             MLog.event("replay.skip.both",
                     "mac", mac,
+                    "stored_codec", stored.codecType,
                     "stored_specific1", stored.codecSpecific1,
                     "stored_rate", stored.sampleRate);
             return;
@@ -258,6 +274,10 @@ public final class ConnectionStateReplayer {
         if (sampleRateSelectable) builder.withSampleRate(stored.sampleRate);
 
         CodecRequest req = builder.build();
+        dispatchReplay(req);
+    }
+
+    private void dispatchReplay(CodecRequest req) {
         MLog.event("replay.dispatch", "request", req);
         bridge.setCodec(req).whenComplete((result, throwable) -> {
             if (throwable != null) {
@@ -265,9 +285,14 @@ public final class ConnectionStateReplayer {
                 return;
             }
             MLog.event("replay.outcome",
-                    "path", result.path,
-                    "outcome", result.outcome);
+                    "path", result != null ? result.path : "unknown",
+                    "outcome", result != null ? result.outcome : "null");
         });
+    }
+
+    private static boolean isStandardCodec(int codecType) {
+        return codecType == CodecLabelTable.CODEC_SBC
+                || codecType == CodecLabelTable.CODEC_AAC;
     }
 
     private static boolean arrayContains(long[] arr, long value) {

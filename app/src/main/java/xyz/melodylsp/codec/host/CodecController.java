@@ -1567,7 +1567,8 @@ public final class CodecController {
             CodecSnapshot s = lastSnapshot.get();
             boolean a2dpReady = isA2dpReadyOrUnknown(sub);
             if (a2dpReady && s != null && s.mac != null && s.mac.equals(sub.mac)) {
-                prefs.writeSnapshot(sub.mac, s.activeCodecSpecific1, s.activeSampleRate);
+                prefs.writeSnapshot(
+                        sub.mac, s.activeCodecType, s.activeCodecSpecific1, s.activeSampleRate);
             } else if (!a2dpReady) {
                 MLog.event("remember.write.skip",
                         "reason", "a2dp_waiting",
@@ -1612,6 +1613,16 @@ public final class CodecController {
             WriteFailureHandler failureHandler,
             long generation,
             WriteSuccessHandler successHandler) {
+        applyWrite(sub, request, failureHandler, generation, successHandler, true);
+    }
+
+    private void applyWrite(
+            Subscription sub,
+            CodecRequest request,
+            WriteFailureHandler failureHandler,
+            long generation,
+            WriteSuccessHandler successHandler,
+            boolean rememberOnConfirmed) {
         if (!isA2dpReadyOrUnknown(sub)) {
             renderA2dpWaiting(sub);
             Toast.makeText(context, Strings.TOAST_A2DP_WAITING, Toast.LENGTH_SHORT).show();
@@ -1643,8 +1654,10 @@ public final class CodecController {
                     } else if (result.path == WriteResult.Path.ROOT_SHELL) {
                         Toast.makeText(context, Strings.BANNER_VIA_ROOT, Toast.LENGTH_LONG).show();
                     }
-                    if (prefs.isRemembered(sub.mac) && request.sampleRate != 0) {
-                        prefs.writeSnapshot(sub.mac, request.codecSpecific1, request.sampleRate);
+                    if (rememberOnConfirmed && prefs.isRemembered(sub.mac)) {
+                        prefs.writeSnapshot(
+                                sub.mac, request.codecType,
+                                request.codecSpecific1, request.sampleRate);
                     }
                     if (successHandler != null && successHandler.onConfirmed(result)) return;
                     refreshSnapshot(sub);
@@ -1869,7 +1882,7 @@ public final class CodecController {
                         sub, highQualityRequest, generation, 1, false);
             }, AAC_HIGH_QUALITY_WARMUP_DELAY_MS);
             return true;
-        });
+        }, false);
     }
 
     private CodecRequest buildHighQualityCodecRequest(Subscription sub, CodecSnapshot live) {
