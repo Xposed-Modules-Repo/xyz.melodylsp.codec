@@ -57,13 +57,21 @@ public final class DiagnosticEvents {
         if (context == null) return "";
         long now = System.currentTimeMillis();
         String id = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(new Date(now));
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit()
+        SharedPreferences sp = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        SharedPreferences.Editor editor = sp.edit()
                 .putString(KEY_SESSION_ID, id)
                 .putLong(KEY_SESSION_STARTED, now)
                 .remove(KEY_EVENTS)
-                .remove(KEY_EVENTS_JSON)
-                .apply();
+                .remove(KEY_EVENTS_JSON);
+        for (String key : sp.getAll().keySet()) {
+            if (key.startsWith("status.")
+                    || key.startsWith("detail.")
+                    || key.startsWith("time.")
+                    || key.startsWith("last.")) {
+                editor.remove(key);
+            }
+        }
+        editor.apply();
         record(context, "module", Log.INFO, "evt=diag.session.start id=" + id, now);
         return id;
     }
@@ -183,7 +191,8 @@ public final class DiagnosticEvents {
                 || message.contains("evt=le.ws.")) {
             mark(editor, "bridge.le.ws", "registered", message, time);
         }
-        if (message.contains("evt=lhdc.memory_patch")) {
+        if (message.contains("evt=lhdc.memory_patch")
+                || message.contains("evt=native.patch.state.recv")) {
             mark(editor, "native.patch", stateFromMessage(message), message, time);
         }
         if (message.contains("evt=write.")
@@ -198,7 +207,7 @@ public final class DiagnosticEvents {
         if (message.contains("evt=replay.")) {
             mark(editor, "remember.replay", stateFromMessage(message), message, time);
         }
-        if (priority >= Log.WARN) {
+        if (priority >= Log.WARN && !isRecoverableFallbackWarning(message)) {
             String key = priority >= Log.ERROR ? "last.error" : "last.warning";
             mark(editor, key, priority >= Log.ERROR ? "error" : "warning", message, time);
         }
@@ -247,6 +256,11 @@ public final class DiagnosticEvents {
             return "attention";
         }
         return "seen";
+    }
+
+    private static boolean isRecoverableFallbackWarning(String message) {
+        return message.contains("Path-A setCodec failed")
+                || message.contains("Path-A setOptionalCodecs failed");
     }
 
     private static String trimRing(String value, int maxChars) {

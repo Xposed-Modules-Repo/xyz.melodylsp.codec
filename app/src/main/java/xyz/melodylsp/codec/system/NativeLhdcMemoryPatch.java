@@ -33,8 +33,8 @@ final class NativeLhdcMemoryPatch {
     private static final PatternSpec[] PATTERN_SPECS = {
             new PatternSpec(
                     "branch_plus_69",
-                    hex("1f0900f1a2080054e83d80529b008052"),
-                    hex("1f0900f145000014e83d80529b008052"),
+                    hex("200900f1a2080054e83d80529b008052"),
+                    hex("200900f145000014e83d80529b008052"),
                     4,
                     hex("45000014")),
             new PatternSpec(
