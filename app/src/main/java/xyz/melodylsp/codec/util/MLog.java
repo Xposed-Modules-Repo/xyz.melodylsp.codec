@@ -3,6 +3,9 @@ package xyz.melodylsp.codec.util;
 import android.content.Context;
 import android.util.Log;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import io.github.libxposed.api.XposedInterface;
 import xyz.melodylsp.codec.BuildConfig;
 import xyz.melodylsp.codec.diag.DiagnosticEvents;
@@ -20,6 +23,9 @@ public final class MLog {
     private static volatile String hostVersion = "?";
     private static volatile Context diagnosticContext;
     private static volatile String diagnosticScope = "unknown";
+    private static final Object PENDING_LOCK = new Object();
+    private static final List<PendingDiagnostic> pendingDiagnostics = new ArrayList<>();
+    private static final int MAX_PENDING_DIAGNOSTICS = 128;
 
     private MLog() {
     }
@@ -29,12 +35,15 @@ public final class MLog {
     }
 
     public static void setDiagnosticContext(Context context, String scope) {
+        Context appContext = null;
         if (context != null) {
-            diagnosticContext = context.getApplicationContext();
+            appContext = context.getApplicationContext();
+            diagnosticContext = appContext;
         }
         if (scope != null && !scope.isEmpty()) {
             diagnosticScope = scope;
         }
+        flushPendingDiagnostics(appContext, diagnosticScope);
     }
 
     /** Called by {@link xyz.melodylsp.codec.host.HostHookInstaller} once host package info is known. */
@@ -82,6 +91,7 @@ public final class MLog {
     }
 
     private static void emit(int priority, String message, Throwable t) {
+        long time = System.currentTimeMillis();
         String prefixed = prefix() + message;
         if (t == null) {
             Log.println(priority, TAG, prefixed);
@@ -97,11 +107,51 @@ public final class MLog {
                 // Logging never crashes the app.
             }
         }
-        DiagnosticEvents.send(diagnosticContext, diagnosticScope, priority,
-                t == null ? prefixed : prefixed + '\n' + Log.getStackTraceString(t));
+        String diagnosticMessage = t == null ? prefixed : prefixed + '\n' + Log.getStackTraceString(t);
+        Context context = diagnosticContext;
+        if (context != null) {
+            DiagnosticEvents.send(context, diagnosticScope, priority, diagnosticMessage, time);
+        } else {
+            enqueuePendingDiagnostic(priority, diagnosticMessage, time);
+        }
     }
 
     private static String prefix() {
         return "[mod=" + BuildConfig.VERSION_NAME + " host=" + hostVersion + "] ";
+    }
+
+    private static void enqueuePendingDiagnostic(int priority, String message, long time) {
+        if (priority < Log.INFO) return;
+        synchronized (PENDING_LOCK) {
+            pendingDiagnostics.add(new PendingDiagnostic(priority, message, time));
+            while (pendingDiagnostics.size() > MAX_PENDING_DIAGNOSTICS) {
+                pendingDiagnostics.remove(0);
+            }
+        }
+    }
+
+    private static void flushPendingDiagnostics(Context context, String scope) {
+        if (context == null) return;
+        List<PendingDiagnostic> copy;
+        synchronized (PENDING_LOCK) {
+            if (pendingDiagnostics.isEmpty()) return;
+            copy = new ArrayList<>(pendingDiagnostics);
+            pendingDiagnostics.clear();
+        }
+        for (PendingDiagnostic pending : copy) {
+            DiagnosticEvents.send(context, scope, pending.priority, pending.message, pending.time);
+        }
+    }
+
+    private static final class PendingDiagnostic {
+        final int priority;
+        final String message;
+        final long time;
+
+        PendingDiagnostic(int priority, String message, long time) {
+            this.priority = priority;
+            this.message = message;
+            this.time = time;
+        }
     }
 }

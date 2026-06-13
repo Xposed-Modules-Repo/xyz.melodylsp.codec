@@ -78,6 +78,16 @@ public final class FeedbackCollector {
             "write.timeout",
             "ignore target bitrate"
     };
+    private static final String[] SU_CANDIDATES = {
+            "su",
+            "/system/bin/su",
+            "/system/xbin/su",
+            "/sbin/su",
+            "/vendor/bin/su",
+            "/debug_ramdisk/su",
+            "/data/adb/ksu/bin/su",
+            "/data/adb/magisk/su"
+    };
     private static final int MAX_COMMAND_OUTPUT_CHARS = 4_000_000;
 
     private FeedbackCollector() {
@@ -268,10 +278,8 @@ public final class FeedbackCollector {
                 "-s", "MelodyCodecLsp:V", "LSPosedFramework:I"
         });
         if (direct.trim().length() > 80) return direct;
-        String rooted = runCommand(new String[]{
-                "su", "-c",
-                "logcat -d -b all -t 4000 -s MelodyCodecLsp:V LSPosedFramework:I"
-        });
+        String rooted = runRootCommand(
+                "/system/bin/logcat -d -b all -t 4000 -s MelodyCodecLsp:V LSPosedFramework:I");
         if (!rooted.trim().isEmpty()) {
             return "direct logcat was empty; su fallback used\n\n" + rooted;
         }
@@ -280,8 +288,8 @@ public final class FeedbackCollector {
     }
 
     private static String collectBluetoothLogcatRoot() {
-        String all = runCommand(new String[]{"su", "-c", "logcat -d -b all -t 12000"});
-        if (all.startsWith("command failed:")) {
+        String all = runRootCommand("/system/bin/logcat -d -b all -t 12000");
+        if (all.startsWith("root command failed:")) {
             return "root logcat unavailable\n\n" + all;
         }
         return filterBluetoothLog(all);
@@ -302,6 +310,47 @@ public final class FeedbackCollector {
             return "root logcat succeeded, but no relevant bluetooth/module lines matched.\n";
         }
         return out.toString();
+    }
+
+    private static String runRootCommand(String command) {
+        StringBuilder failures = new StringBuilder();
+        for (String su : SU_CANDIDATES) {
+            String result = runCommand(new String[]{su, "-c", command});
+            if (!looksLikeRootCommandFailure(result)) {
+                return result;
+            }
+            failures.append("$ ").append(su).append(" -c ").append(command).append('\n')
+                    .append(result).append('\n');
+        }
+        String shellResult = runCommand(new String[]{
+                "/system/bin/sh",
+                "-c",
+                "PATH=/data/adb/ksu/bin:/data/adb/magisk:/system/bin:/system/xbin:/vendor/bin:/sbin:$PATH su -c \""
+                        + shellEscape(command) + "\""
+        });
+        if (!looksLikeRootCommandFailure(shellResult)) {
+            return shellResult;
+        }
+        failures.append("$ /system/bin/sh -c su -c ...\n").append(shellResult).append('\n');
+        return "root command failed: no usable su was found or root access was denied\n\n"
+                + failures;
+    }
+
+    private static boolean looksLikeRootCommandFailure(String result) {
+        if (result == null) return true;
+        String lower = result.toLowerCase(Locale.ROOT);
+        return lower.startsWith("command failed:")
+                || lower.contains("cannot run program")
+                || lower.contains("inaccessible or not found")
+                || lower.contains("permission denied")
+                || lower.contains("not allowed")
+                || lower.contains("su: not found")
+                || lower.contains("unknown option")
+                || lower.contains("command timed out");
+    }
+
+    private static String shellEscape(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     private static String runCommand(String[] command) {

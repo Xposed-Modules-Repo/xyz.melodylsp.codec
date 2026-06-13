@@ -31,6 +31,15 @@ public final class DiagnosticEvents {
     }
 
     public static void send(Context context, String scope, int priority, String message) {
+        send(context, scope, priority, message, System.currentTimeMillis());
+    }
+
+    public static void send(
+            Context context,
+            String scope,
+            int priority,
+            String message,
+            long time) {
         if (context == null || message == null || priority < Log.INFO) return;
         try {
             Intent intent = new Intent(ACTION);
@@ -38,7 +47,7 @@ public final class DiagnosticEvents {
             intent.putExtra(EXTRA_SCOPE, scope != null ? scope : "unknown");
             intent.putExtra(EXTRA_PRIORITY, priority);
             intent.putExtra(EXTRA_MESSAGE, message);
-            intent.putExtra(EXTRA_TIME, System.currentTimeMillis());
+            intent.putExtra(EXTRA_TIME, time > 0L ? time : System.currentTimeMillis());
             context.sendBroadcast(intent);
         } catch (Throwable ignored) {
         }
