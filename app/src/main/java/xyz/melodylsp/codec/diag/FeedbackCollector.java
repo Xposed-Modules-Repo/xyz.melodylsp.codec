@@ -22,6 +22,7 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -37,6 +38,48 @@ public final class FeedbackCollector {
             "com.oplus.wirelesssettings"
     };
 
+    private static final String[] STATUS_KEYS = {
+            "scope.host",
+            "host.controller",
+            "hook.host",
+            "inject.detail",
+            "inject.onespace",
+            "scope.bluetooth",
+            "bridge.codec",
+            "bridge.le.bt",
+            "scope.wirelesssettings",
+            "bridge.le.ws",
+            "native.patch",
+            "codec.write",
+            "remember.write",
+            "remember.replay",
+            "last.warning",
+            "last.error"
+    };
+
+    private static final String[] BLUETOOTH_LOG_PATTERNS = {
+            "MelodyCodecLsp",
+            "LSPosedFramework",
+            "bluetooth-a2dp",
+            "btif_a2dp",
+            "soc_bta_av",
+            "a2dp_vendor_lhdcv5",
+            "a2dp_vendor_lhdcv5_encoder",
+            "OplusA2dpStateMachineExtImpl",
+            "setCodecConfigPreference",
+            "quality_mode",
+            "target bit rate",
+            "max bit rate",
+            "codec_specific_1",
+            "lhdc.memory_patch",
+            "remember.write",
+            "replay.dispatch",
+            "replay.outcome",
+            "write.timeout",
+            "ignore target bitrate"
+    };
+    private static final int MAX_COMMAND_OUTPUT_CHARS = 4_000_000;
+
     private FeedbackCollector() {
     }
 
@@ -46,9 +89,20 @@ public final class FeedbackCollector {
         OutputTarget target = openTarget(context, name);
         try {
             ZipOutputStream zip = new ZipOutputStream(target.stream);
+            SharedPreferences diag = context.getSharedPreferences(
+                    DiagnosticEvents.PREFS, Context.MODE_PRIVATE);
             write(zip, "summary.txt", buildSummary(context));
-            write(zip, "diagnostics.txt", buildDiagnostics(context));
-            write(zip, "logcat.txt", collectLogcat());
+            write(zip, "diagnostics.txt", buildDiagnostics(diag));
+            write(zip, "timeline.txt", diag.getString(DiagnosticEvents.KEY_EVENTS, ""));
+            write(zip, "events.jsonl", diag.getString(DiagnosticEvents.KEY_EVENTS_JSON, ""));
+            write(zip, "state.json", buildStateJson(context, diag));
+            write(zip, "prefs.txt", buildPrefsDump(context, diag));
+
+            String moduleLogcat = collectModuleLogcat();
+            write(zip, "logcat-module.txt", moduleLogcat);
+            write(zip, "logcat.txt", moduleLogcat);
+            write(zip, "logcat-bluetooth-root.txt", collectBluetoothLogcatRoot());
+
             write(zip, "module-prop.txt", readResource(context,
                     "META-INF/xposed/module.prop"));
             write(zip, "scope-list.txt", readResource(context,
@@ -116,38 +170,80 @@ public final class FeedbackCollector {
         SharedPreferences modulePrefs = context.getSharedPreferences(
                 "module_prefs", Context.MODE_PRIVATE);
         sb.append("Module enabled: ").append(modulePrefs.getBoolean("enabled", true)).append('\n');
+        sb.append("Launcher hidden: ")
+                .append(modulePrefs.getBoolean("hide_launcher_icon", false)).append('\n');
         return sb.toString();
     }
 
-    private static String buildDiagnostics(Context context) {
-        SharedPreferences sp = context.getSharedPreferences(
-                DiagnosticEvents.PREFS, Context.MODE_PRIVATE);
+    private static String buildDiagnostics(SharedPreferences sp) {
         StringBuilder sb = new StringBuilder();
+        sb.append("Session\n");
+        sb.append("ID: ").append(sp.getString(DiagnosticEvents.KEY_SESSION_ID, "-")).append('\n');
+        sb.append("Started: ")
+                .append(DiagnosticEvents.formatTime(
+                        sp.getLong(DiagnosticEvents.KEY_SESSION_STARTED, 0L)))
+                .append("\n\n");
         sb.append("Status\n");
-        appendStatus(sb, sp, "scope.host", "Wireless Headset scope");
-        appendStatus(sb, sp, "host.controller", "Host controller");
-        appendStatus(sb, sp, "hook.host", "Host hooks");
-        appendStatus(sb, sp, "inject.detail", "DetailMain injection");
-        appendStatus(sb, sp, "inject.onespace", "OneSpace injection");
-        appendStatus(sb, sp, "scope.bluetooth", "Bluetooth scope");
-        appendStatus(sb, sp, "bridge.codec", "A2DP bridge");
-        appendStatus(sb, sp, "bridge.le.bt", "LE Audio bluetooth bridge");
-        appendStatus(sb, sp, "scope.wirelesssettings", "WirelessSettings scope");
-        appendStatus(sb, sp, "bridge.le.ws", "LE Audio wirelesssettings bridge");
-        appendStatus(sb, sp, "last.warning", "Last warning");
-        appendStatus(sb, sp, "last.error", "Last error");
-        sb.append("\nRaw SharedPreferences\n");
-        for (Map.Entry<String, ?> entry : sp.getAll().entrySet()) {
-            sb.append(entry.getKey()).append('=').append(entry.getValue()).append('\n');
+        for (String key : STATUS_KEYS) {
+            appendStatus(sb, sp, key, key);
         }
+        sb.append("\nRaw diagnostics SharedPreferences\n");
+        appendPrefs(sb, sp);
         sb.append("\nEvent ring\n");
         sb.append(sp.getString(DiagnosticEvents.KEY_EVENTS, ""));
         sb.append('\n');
         return sb.toString();
     }
 
+    private static String buildPrefsDump(Context context, SharedPreferences diag) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("module_prefs\n");
+        appendPrefs(sb, context.getSharedPreferences("module_prefs", Context.MODE_PRIVATE));
+        sb.append("\n");
+        sb.append("diagnostics\n");
+        appendPrefs(sb, diag);
+        sb.append("\n");
+        sb.append("Note: host-app per-device remembered codec preferences live in the host app data. ")
+                .append("They are mirrored here through remember.write events when the hook runs.\n");
+        return sb.toString();
+    }
+
+    private static String buildStateJson(Context context, SharedPreferences sp) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\n");
+        json(sb, "moduleVersion", BuildConfig.VERSION_NAME + " (" + BuildConfig.VERSION_CODE + ")",
+                true, 1);
+        json(sb, "brand", Build.BRAND, true, 1);
+        json(sb, "manufacturer", Build.MANUFACTURER, true, 1);
+        json(sb, "model", Build.MODEL, true, 1);
+        json(sb, "android", Build.VERSION.RELEASE + " / SDK " + Build.VERSION.SDK_INT, true, 1);
+        json(sb, "build", Build.DISPLAY, true, 1);
+        json(sb, "moduleEnabled", String.valueOf(context.getSharedPreferences(
+                "module_prefs", Context.MODE_PRIVATE).getBoolean("enabled", true)), false, 1);
+        json(sb, "launcherHidden", String.valueOf(context.getSharedPreferences(
+                "module_prefs", Context.MODE_PRIVATE).getBoolean("hide_launcher_icon", false)),
+                false, 1);
+        sb.append("  \"statuses\": {\n");
+        for (int i = 0; i < STATUS_KEYS.length; i++) {
+            String key = STATUS_KEYS[i];
+            sb.append("    \"").append(escape(key)).append("\": {");
+            sb.append("\"status\":\"").append(escape(DiagnosticEvents.status(sp, key))).append("\",");
+            sb.append("\"time\":\"").append(escape(DiagnosticEvents.formatTime(
+                    DiagnosticEvents.time(sp, key)))).append("\",");
+            sb.append("\"detail\":\"").append(escape(DiagnosticEvents.detail(sp, key))).append("\"");
+            sb.append('}');
+            sb.append(i + 1 < STATUS_KEYS.length ? ",\n" : "\n");
+        }
+        sb.append("  }\n");
+        sb.append("}\n");
+        return sb.toString();
+    }
+
     private static void appendStatus(
-            StringBuilder sb, SharedPreferences sp, String key, String label) {
+            StringBuilder sb,
+            SharedPreferences sp,
+            String key,
+            String label) {
         sb.append(label).append(": ")
                 .append(DiagnosticEvents.status(sp, key))
                 .append(" @ ")
@@ -159,10 +255,23 @@ public final class FeedbackCollector {
         sb.append('\n');
     }
 
-    private static String collectLogcat() {
-        String direct = runCommand(new String[]{"logcat", "-d", "-s", "MelodyCodecLsp:V"});
+    private static void appendPrefs(StringBuilder sb, SharedPreferences sp) {
+        Map<String, ?> values = new TreeMap<>(sp.getAll());
+        for (Map.Entry<String, ?> entry : values.entrySet()) {
+            sb.append(entry.getKey()).append('=').append(entry.getValue()).append('\n');
+        }
+    }
+
+    private static String collectModuleLogcat() {
+        String direct = runCommand(new String[]{
+                "logcat", "-d", "-b", "all", "-t", "2000",
+                "-s", "MelodyCodecLsp:V", "LSPosedFramework:I"
+        });
         if (direct.trim().length() > 80) return direct;
-        String rooted = runCommand(new String[]{"su", "-c", "logcat -d -s MelodyCodecLsp:V"});
+        String rooted = runCommand(new String[]{
+                "su", "-c",
+                "logcat -d -b all -t 4000 -s MelodyCodecLsp:V LSPosedFramework:I"
+        });
         if (!rooted.trim().isEmpty()) {
             return "direct logcat was empty; su fallback used\n\n" + rooted;
         }
@@ -170,33 +279,56 @@ public final class FeedbackCollector {
                 + direct;
     }
 
+    private static String collectBluetoothLogcatRoot() {
+        String all = runCommand(new String[]{"su", "-c", "logcat -d -b all -t 12000"});
+        if (all.startsWith("command failed:")) {
+            return "root logcat unavailable\n\n" + all;
+        }
+        return filterBluetoothLog(all);
+    }
+
+    private static String filterBluetoothLog(String all) {
+        StringBuilder out = new StringBuilder();
+        String[] lines = all.split("\\n");
+        for (String line : lines) {
+            for (String pattern : BLUETOOTH_LOG_PATTERNS) {
+                if (line.contains(pattern)) {
+                    out.append(line).append('\n');
+                    break;
+                }
+            }
+        }
+        if (out.length() == 0) {
+            return "root logcat succeeded, but no relevant bluetooth/module lines matched.\n";
+        }
+        return out.toString();
+    }
+
     private static String runCommand(String[] command) {
         Process process = null;
+        StreamCollector out = null;
+        StreamCollector err = null;
         try {
             process = Runtime.getRuntime().exec(command);
-            boolean finished = process.waitFor(8, TimeUnit.SECONDS);
-            String out = readStream(process.getInputStream());
-            String err = readStream(process.getErrorStream());
+            out = new StreamCollector(process.getInputStream());
+            err = new StreamCollector(process.getErrorStream());
+            out.start();
+            err.start();
+            boolean finished = process.waitFor(10, TimeUnit.SECONDS);
             if (!finished) {
                 process.destroy();
-                return out + "\n(command timed out)\n" + err;
             }
-            return out + (err.isEmpty() ? "" : "\n--- stderr ---\n" + err);
+            out.join(1000);
+            err.join(1000);
+            String stdout = out.text();
+            String stderr = err.text();
+            String suffix = stderr.isEmpty() ? "" : "\n--- stderr ---\n" + stderr;
+            return stdout + (finished ? suffix : "\n(command timed out)\n" + suffix);
         } catch (Throwable t) {
             return "command failed: " + t + '\n';
         } finally {
             if (process != null) process.destroy();
         }
-    }
-
-    private static String readStream(InputStream in) throws Exception {
-        BufferedReader br = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
-        StringBuilder sb = new StringBuilder();
-        String line;
-        while ((line = br.readLine()) != null) {
-            sb.append(line).append('\n');
-        }
-        return sb.toString();
     }
 
     private static String readResource(Context context, String name) {
@@ -235,6 +367,55 @@ public final class FeedbackCollector {
         zip.closeEntry();
     }
 
+    private static void json(
+            StringBuilder sb,
+            String name,
+            String value,
+            boolean quoted,
+            int indent) {
+        for (int i = 0; i < indent; i++) sb.append("  ");
+        sb.append('"').append(escape(name)).append('"').append(':');
+        if (quoted) {
+            sb.append('"').append(escape(value)).append('"');
+        } else {
+            sb.append(value);
+        }
+        sb.append(",\n");
+    }
+
+    private static String escape(String value) {
+        if (value == null) return "";
+        StringBuilder out = new StringBuilder(value.length() + 16);
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            switch (c) {
+                case '\\':
+                    out.append("\\\\");
+                    break;
+                case '"':
+                    out.append("\\\"");
+                    break;
+                case '\n':
+                    out.append("\\n");
+                    break;
+                case '\r':
+                    out.append("\\r");
+                    break;
+                case '\t':
+                    out.append("\\t");
+                    break;
+                default:
+                    if (c < 0x20) {
+                        out.append(String.format(Locale.ROOT, "\\u%04x", (int) c));
+                    } else {
+                        out.append(c);
+                    }
+                    break;
+            }
+        }
+        return out.toString();
+    }
+
     private static final class OutputTarget {
         final OutputStream stream;
         final String displayPath;
@@ -258,11 +439,50 @@ public final class FeedbackCollector {
                 stream.close();
             } catch (Throwable ignored) {
             }
-            if (mediaUri != null) {
+            if (mediaUri != null && Build.VERSION.SDK_INT >= 29) {
                 try {
                     context.getContentResolver().delete(mediaUri, null, null);
                 } catch (Throwable ignored) {
                 }
+            }
+        }
+    }
+
+    private static final class StreamCollector extends Thread {
+        private final InputStream in;
+        private final StringBuilder text = new StringBuilder();
+
+        StreamCollector(InputStream in) {
+            super("OPlusHeadsetAudioHelper-stream");
+            this.in = in;
+        }
+
+        @Override
+        public void run() {
+            try {
+                BufferedReader br = new BufferedReader(
+                        new InputStreamReader(in, StandardCharsets.UTF_8));
+                String line;
+                while ((line = br.readLine()) != null) {
+                    append(line);
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+
+        synchronized String text() {
+            return text.toString();
+        }
+
+        private synchronized void append(String line) {
+            text.append(line).append('\n');
+            if (text.length() <= MAX_COMMAND_OUTPUT_CHARS) return;
+            int trimTo = text.length() - MAX_COMMAND_OUTPUT_CHARS;
+            int firstBreak = text.indexOf("\n", trimTo);
+            if (firstBreak > 0 && firstBreak + 1 < text.length()) {
+                text.delete(0, firstBreak + 1);
+            } else {
+                text.delete(0, trimTo);
             }
         }
     }

@@ -15,8 +15,8 @@
 - 支持按耳机记忆选择，重新连接后自动应用上次设置。
 - 支持 LE Audio 开关：开启后进入 LC3，并隐藏经典 A2DP 下的播放质量和采样率选项；关闭后恢复经典蓝牙音频状态。
 - 耳机未连接、当前协议不可控、耳机不支持 Hi-Res 或 LE Audio 时，会隐藏或置灰对应选项，尽量贴近官方控件表现。
-- 提供模块内置诊断页，可以查看作用域加载、页面 Hook、蓝牙桥接、无线设置桥接等状态。
-- 提供一键收集反馈包，便于排查不同手机、系统版本、耳机型号和「无线耳机」版本带来的差异。
+- 提供模块内置诊断页，可以查看作用域加载、页面 Hook、蓝牙桥接、无线设置桥接、native 补丁、记忆重放等状态，并可按需隐藏桌面图标。
+- 提供「开始记录问题 + 生成反馈包」的复现记录流程，便于排查不同手机、系统版本、耳机型号和「无线耳机」版本带来的差异。
 
 ## 使用要求
 
@@ -41,25 +41,26 @@
 
 如果只想临时停用模块，可以打开桌面图标「欧加耳机音质助手」，关闭模块总开关。关闭后需要重启「无线耳机」进程，宿主页才会完全恢复原状。
 
+桌面图标默认显示。若不希望启动器里出现模块图标，可以在诊断页打开「隐藏桌面图标」开关；这个开关只控制 launcher alias，不会禁用模块，也不会影响 LSPosed 作用域加载。
+
 ## 内置诊断页
 
-模块桌面入口会显示：
+模块桌面入口是内置诊断页，主要包含：
 
 - 模块总开关。
-- 模块版本、手机型号、Android 版本。
-- 「无线耳机」作用域是否加载。
-- 页面 Hook 是否安装成功。
-- 蓝牙作用域是否加载。
-- A2DP Bridge 是否收到事件。
-- 无线设置作用域是否加载。
-- LE Audio 无线设置桥是否收到事件。
-- 最近 Hook / 写入 / 状态同步日志。
+- 隐藏桌面图标开关。
+- 模块版本、手机型号、Android 版本和相关包版本。
+- 「无线耳机」作用域、页面 Hook、主面板 / OneSpace 注入状态。
+- 蓝牙作用域、A2DP Bridge、无线设置作用域和 LE Audio bridge 状态。
+- LHDC V5 native 内存补丁、最近写入、记忆写入和重连重放状态。
+- 「开始记录问题」和「生成反馈包」两个反馈操作。
+- 最近结构化事件时间线。
 
-如果出现「页面没有注入」「切换失败」「LE Audio 状态不刷新」这类问题，优先截一张诊断页图，基本可以先判断是作用域没生效、页面 Hook 丢了、蓝牙桥没收到，还是无线设置桥没工作。
+如果出现「页面没有注入」「切换失败」「LE Audio 状态不刷新」「重连后记忆没有恢复」这类问题，建议先点「开始记录问题」，复现一次问题，再点「生成反馈包」。诊断页截图也仍然有用，可以快速判断是作用域没生效、页面 Hook 丢了、蓝牙桥没收到、native 补丁没命中，还是无线设置桥没工作。
 
 ## 一键反馈包
 
-诊断页里的「一键收集反馈包」会生成：
+诊断页里的「生成反馈包」会生成：
 
 ```text
 OPlusHeadsetAudioHelper-feedback-YYYYMMDD-HHMMSS.zip
@@ -77,7 +78,24 @@ OPlusHeadsetAudioHelper-feedback-YYYYMMDD-HHMMSS.zip
 /storage/emulated/0/Download/
 ```
 
-反馈包包含设备信息、模块版本、相关包版本、诊断状态、最近模块事件、`scope.list`、`module.prop` 和一份 logcat。它不会主动打包用户文件，但 logcat 里可能包含系统日志，请反馈前自行确认是否介意。
+建议反馈前按这个流程操作：
+
+1. 打开诊断页，点击「开始记录问题」。
+2. 回到「无线耳机」页面复现一次问题，例如切换 LHDC 质量 / 采样率、断开重连、打开 LE Audio。
+3. 再回到诊断页，点击「生成反馈包」。
+
+反馈包包含设备信息、模块版本、相关包版本、诊断状态、最近模块事件时间线、结构化事件 JSONL、状态快照、模块偏好、`scope.list`、`module.prop` 和模块 logcat。若设备已授权 root，还会额外尝试抓取并过滤蓝牙栈相关 logcat，便于确认 `quality_mode`、`target bit rate`、`codec_specific_1`、native patch 和记忆重放情况。它不会主动打包用户文件，但 logcat 里可能包含系统日志，请反馈前自行确认是否介意。
+
+常见文件包括：
+
+- `summary.txt`：设备、系统、模块和相关包版本概览。
+- `diagnostics.txt`：诊断页状态汇总。
+- `timeline.txt`：模块事件时间线，适合直接阅读。
+- `events.jsonl`：结构化事件，适合后续筛选分析。
+- `state.json`：当前诊断状态快照。
+- `prefs.txt`：模块偏好和诊断偏好。
+- `logcat-module.txt`：模块相关 logcat。
+- `logcat-bluetooth-root.txt`：root 可用时抓取的蓝牙栈相关日志。
 
 ## LE Audio 说明
 
@@ -143,15 +161,18 @@ LHDC 的实时切换更依赖厂商蓝牙栈。模块会直接写入目标播放
 
 ## LHDC V5 运行时内存补丁
 
-当前版本已内置 LSPosed 进程内 native helper，用来处理部分 OPlus / ColorOS 蓝牙栈忽略 LHDC V5 固定 900 / 1000 kbps 目标码率的问题。只要启用 `com.android.bluetooth` 作用域，模块会在蓝牙进程启动后自动尝试运行时内存补丁。
+当前版本已内置 LSPosed 进程内 native helper 和多 pattern 运行时补丁表，用来处理部分 OPlus / ColorOS 蓝牙栈忽略 LHDC V5 固定 900 / 1000 kbps 目标码率的问题。只要启用 `com.android.bluetooth` 作用域，模块会在蓝牙进程启动后自动尝试运行时内存补丁。
 
 补丁流程：
 
 - 在 `com.android.bluetooth` 进程内加载 APK 自带的 `libmelody_lhdc_patch.so`。
 - 扫描当前已映射的 `/system/lib64/libbluetooth_jni.so`。
-- 只有在已知 LHDC V5 原始字节特征唯一命中时，才临时修改目标内存页权限并写入同一处 4 字节补丁。
+- 按已知蓝牙库族的机器码字节特征匹配目标函数；当前已覆盖实测的 `branch_plus_69`、`branch_plus_23_op15` 等变体。
+- 只有在某个已知特征唯一命中时，才临时修改目标内存页权限并写入对应 4 字节补丁。
 - 写入后立即回读验证，并恢复原内存页权限。
 - 不替换系统文件，不复制系统库，不创建 KernelSU / Magisk mount。
+
+这里的「pattern」是 `libbluetooth_jni.so` 里目标函数附近的机器码字节特征，不是 APK 签名或系统证书签名。同一机型的小版本系统更新如果没有重新编译相关蓝牙库，通常不需要重新适配；只有目标函数机器码布局变化时，才需要新增 pattern。
 
 可通过 logcat 确认补丁状态。补丁日志只在蓝牙进程启动或重试补丁时输出一次；如果启动时没有抓到，之后再查可能没有任何输出。
 
@@ -179,7 +200,7 @@ adb logcat -v time MelodyCodecLsp:V LSPosedFramework:I '*:S' | grep 'lhdc.memory
 
 ```text
 evt=lhdc.memory_patch.native_loaded path=.../libmelody_lhdc_patch.so
-evt=lhdc.memory_patch status=patched ... success=true
+evt=lhdc.memory_patch status=patched detail=pattern=branch_plus_69 ... success=true
 ```
 
 如果蓝牙进程已经被补过，可能显示：
@@ -187,6 +208,14 @@ evt=lhdc.memory_patch status=patched ... success=true
 ```text
 evt=lhdc.memory_patch status=already_patched ... success=true
 ```
+
+如果当前 ROM 的 `libbluetooth_jni.so` 尚未覆盖，模块会安全跳过，类似：
+
+```text
+evt=lhdc.memory_patch status=unsupported ... patched=0 original=0 success=false
+```
+
+这种情况不会替换系统文件，也不会强行写入未知地址。请提供反馈包或对应 `libbluetooth_jni.so`，后续可以按新库族补充 pattern。反馈包里的 `diagnostics.txt`、`timeline.txt`、`events.jsonl` 会记录 native patch 状态。
 
 实测补丁生效后，LHDC V5 音质优先可稳定进入约 1000 kbps 档位，蓝牙栈在重新配置 encoder 时会出现 `quality_mode=HIGH1_1000(8)`，切换后不会回落到自适应。
 
@@ -208,7 +237,7 @@ adb logcat -v time -b all | grep -E 'quality_mode=HIGH1_1000|target bit rate: 8|
 
 `ksu/oplus_lhdcv5_native_patch/` 保留了一份旧的 KernelSU / Magisk 兼容模块源码，只作为历史参考和极端兜底。它通过系统级 overlay 替换当前设备上的 `libbluetooth_jni.so` 副本，虽然安装时会动态匹配字节特征，但仍会创建可被检测到的 systemless mount。
 
-常规发布不再建议打包或上传这个 KSU / Magisk zip。只有当内置运行时内存补丁无法加载、无法命中特征，且用户明确接受 KernelSU / Magisk mount 风险时，才考虑手动使用这份旧源码。
+常规发布不再建议打包或上传这个 KSU / Magisk zip。只有当内置运行时内存补丁无法加载或无法命中特征，且用户明确接受 KernelSU / Magisk mount 风险时，才考虑手动使用这份旧源码。
 
 旧补丁模块不内置任何设备上的 `libbluetooth_jni.so`。刷入时它会读取当前系统的 `/system/lib64/libbluetooth_jni.so`，只有在已知原始字节特征唯一命中时才复制到模块 overlay 路径并现场改 4 字节；匹配不到或命中过多会直接中止安装，避免误修补其他 ROM 布局。安装信息会写入 `/data/adb/modules/oplus_lhdcv5_native_patch/patch-info.txt`，开机后也会通过 `OPlusLHDCV5Patch` logcat 标签输出。
 
@@ -241,6 +270,10 @@ adb logcat -s MelodyCodecLsp:V
 - `evt=codec.updated.hooks`：蓝牙侧编解码器更新 Hook 是否安装。
 - `evt=scope.wirelesssettings.context.ready`：无线设置作用域是否加载。
 - `le.melody.state.recv`：LE Audio 状态是否回传到 Melody。
+- `evt=lhdc.memory_patch`：LHDC V5 运行时内存补丁加载、命中和验证状态。
+- `evt=remember.write`：按耳机记忆是否写入。
+- `evt=replay.dispatch` / `evt=replay.outcome`：重连后记忆重放和确认结果。
+- `evt=diag.session.start`：诊断页开始一次问题记录。
 - `write.path`：播放质量 / 采样率实际走了哪条写入路径。
 - `切换未生效`：蓝牙栈拒绝本次写入或回读未确认。
 
@@ -281,12 +314,12 @@ app/src/main/
     ├── MelodyCodecLspEntry.java
     ├── bt/          # A2DP 隐藏 API 反射
     ├── bridge/      # AIDL Parcelable 类型
-    ├── diag/        # 诊断事件与反馈包
+    ├── diag/        # 结构化诊断事件、复现记录与反馈包
     ├── host/        # Melody 页面注入与 UI 控制
     ├── leaudio/     # LE Audio 状态、IPC 与无线设置桥接
     ├── storage/     # 按耳机保存记忆项
     ├── system/      # com.android.bluetooth 侧 bridge
-    ├── ui/          # 模块内置诊断页和总开关
+    ├── ui/          # 模块内置诊断页、总开关和桌面图标开关
     └── util/        # 日志
 
 ksu/oplus_lhdcv5_native_patch/

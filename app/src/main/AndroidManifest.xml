@@ -35,12 +35,20 @@
 
         <activity
             android:name=".ui.MasterSwitchActivity"
-            android:exported="true">
+            android:exported="true" />
+
+        <activity-alias
+            android:name=".ui.LauncherActivity"
+            android:enabled="true"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:label="@string/app_label"
+            android:targetActivity=".ui.MasterSwitchActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
+        </activity-alias>
 
         <receiver
             android:name=".diag.DiagnosticEventReceiver"
