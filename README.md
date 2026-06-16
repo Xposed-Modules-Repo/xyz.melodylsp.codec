@@ -172,10 +172,12 @@ LHDC 的实时切换更依赖厂商蓝牙栈。模块会直接写入目标播放
 
 当前版本已内置 LSPosed 进程内 native helper 和多 pattern 运行时补丁表，用来处理部分 OPlus / ColorOS 蓝牙栈忽略 LHDC V5 固定 900 / 1000 kbps 目标码率的问题。只要启用 `com.android.bluetooth` 作用域，模块会在蓝牙进程启动后自动尝试运行时内存补丁。
 
-已适配机型：
+适配口径：
 
-- 一加 13：ColorOS 16 `C16.0.8.301`
-- 一加 15：ColorOS 16 `C16.0.7.207`
+- 补丁按 `/system/lib64/libbluetooth_jni.so` 内目标函数附近的机器码 pattern 命中，不按手机型号写死白名单。
+- 同一 pattern 可能覆盖多个机型和多个系统小版本；只要蓝牙库目标函数机器码布局没有变化，通常不需要为每次小版本 OTA 单独适配。
+- 已实测一加 13、一加 15、一加 Ace 6 Pro、一加 Ace 6T、一加 12 在 ColorOS 金标版本上可命中现有 pattern，并解除系统侧对 LHDC V5 固定 1 Mbps 目标码率的限制。
+- 最终是否稳定显示 1000 kbps 还取决于耳机、耳机固件、当前采样率和蓝牙栈协商结果；部分 LHDC V5 设备组合可能会把「音质优先」确认到实际可用最高挡位，例如 900 kbps。
 
 补丁流程：
 
@@ -186,7 +188,7 @@ LHDC 的实时切换更依赖厂商蓝牙栈。模块会直接写入目标播放
 - 写入后立即回读验证，并恢复原内存页权限。
 - 不替换系统文件，不复制系统库，不创建 KernelSU / Magisk mount。
 
-这里的「pattern」是 `libbluetooth_jni.so` 里目标函数附近的机器码字节特征，不是 APK 签名或系统证书签名。同一机型的小版本系统更新如果没有重新编译相关蓝牙库，通常不需要重新适配；只有目标函数机器码布局变化时，才需要新增 pattern。
+这里的「pattern」是 `libbluetooth_jni.so` 里目标函数附近的机器码字节特征，不是 APK 签名或系统证书签名，也不是机型名。判断能否适配时优先看 pattern 是否唯一命中；机型和系统版本只作为反馈、复现和归档参考。只有目标函数机器码布局变化，或旧 pattern 不再唯一命中时，才需要新增 pattern。
 
 可通过 logcat 确认补丁状态。补丁日志只在蓝牙进程启动或重试补丁时输出一次；如果启动时没有抓到，之后再查可能没有任何输出。
 
@@ -231,7 +233,7 @@ evt=lhdc.memory_patch status=unsupported ... patched=0 original=0 success=false
 
 这种情况不会替换系统文件，也不会强行写入未知地址。请提供反馈包或对应 `libbluetooth_jni.so`，后续可以按新库族补充 pattern。反馈包里的 `diagnostics.txt`、`timeline.txt`、`events.jsonl` 会记录 native patch 状态。
 
-实测补丁生效后，LHDC V5 音质优先可稳定进入约 1000 kbps 档位，蓝牙栈在重新配置 encoder 时会出现 `quality_mode=HIGH1_1000(8)`，切换后不会回落到自适应。
+在支持 1 Mbps 的耳机链路上，实测补丁生效后，LHDC V5 音质优先可稳定进入约 1000 kbps 档位，蓝牙栈在重新配置 encoder 时会出现 `quality_mode=HIGH1_1000(8)`，切换后不会回落到自适应。若当前耳机或系统组合只向蓝牙栈暴露到 900 kbps，模块会把 900 kbps 作为「音质优先」的实际确认结果处理，避免误显示为未知挡位或切换失败。
 
 如果想验证 1000 kbps，请先开实时监听，再触发一次 A2DP 重新协商，例如在模块里切到自适应后再切回音质优先，或者重连耳机。不要只在稳定播放中用 `logcat -d` 查询；encoder 不会持续输出当前码率。
 
