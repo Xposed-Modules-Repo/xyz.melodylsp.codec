@@ -122,13 +122,13 @@ public final class CodecLabelTable {
     };
 
     /**
-     * User-facing LHDC choices are kept aligned with the original three-mode OPPO UI.
-     * Diagnostic labels for 0x00/0x05/0x07 remain below, but the picker exposes only:
-     * ABR/adaptive, connection priority (0x06), and quality priority (0x08).
+     * User-facing LHDC choices keep OPPO's adaptive / connection-priority modes, while exposing
+     * 900 and 1000 kbps separately because some LHDC V5 earbuds cap fixed quality at 900 kbps.
      */
     public static final long[] LHDC_QUALITY_STEPS = {
             LHDC_QUALITY_ABR,
             LHDC_QUALITY_MID_500,
+            LHDC_QUALITY_FIXED_900,
             LHDC_QUALITY_FIXED_1000
     };
 
