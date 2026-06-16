@@ -1715,9 +1715,7 @@ public final class CodecController {
                         Toast.makeText(context, Strings.BANNER_VIA_ROOT, Toast.LENGTH_LONG).show();
                     }
                     if (rememberOnConfirmed && prefs.isRemembered(sub.mac)) {
-                        prefs.writeSnapshot(
-                                sub.mac, request.codecType,
-                                request.codecSpecific1, request.sampleRate);
+                        writeRememberedConfirmedSnapshot(sub, request, result.rollbackSnapshot);
                     }
                     if (successHandler != null && successHandler.onConfirmed(result)) return;
                     refreshSnapshot(sub);
@@ -1747,6 +1745,25 @@ public final class CodecController {
                         ? Strings.TOAST_NATIVE_PATCH_UNSUPPORTED
                         : Strings.TOAST_APPLY_FAILED,
                 Toast.LENGTH_SHORT).show();
+    }
+
+    private void writeRememberedConfirmedSnapshot(
+            Subscription sub,
+            CodecRequest request,
+            CodecSnapshot confirmedSnapshot) {
+        if (sub == null || sub.mac == null || request == null) return;
+        if (confirmedSnapshot != null
+                && sub.mac.equals(confirmedSnapshot.mac)
+                && confirmedSnapshot.activeCodecType == request.codecType) {
+            prefs.writeSnapshot(
+                    sub.mac,
+                    confirmedSnapshot.activeCodecType,
+                    confirmedSnapshot.activeCodecSpecific1,
+                    confirmedSnapshot.activeSampleRate);
+            return;
+        }
+        prefs.writeSnapshot(
+                sub.mac, request.codecType, request.codecSpecific1, request.sampleRate);
     }
 
     private boolean shouldShowNativePatchUnsupportedToast(CodecRequest request) {
@@ -2293,7 +2310,8 @@ public final class CodecController {
                 break;
             }
         }
-        if (known) {
+        if (known || CodecLabelTable.isKnownQuality(
+                snapshot.activeCodecType, snapshot.activeCodecSpecific1)) {
             PrefRef.setSummary(q, CodecLabelTable.qualityLabel(
                     context, snapshot.activeCodecType, snapshot.activeCodecSpecific1));
         } else {

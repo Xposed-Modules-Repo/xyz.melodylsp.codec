@@ -423,35 +423,66 @@ public final class SystemHookInstaller {
     }
 
     private void runNativeLhdcMemoryPatchNow(String reason) {
-        runNativeLhdcMemoryPatch(reason, false);
+        runNativeLhdcMemoryPatch(reason, false, true);
     }
 
     private void runNativeLhdcMemoryPatch(String reason, boolean allowRetry) {
+        runNativeLhdcMemoryPatch(reason, allowRetry, false);
+    }
+
+    private void runNativeLhdcMemoryPatch(
+            String reason,
+            boolean allowRetry,
+            boolean forceIfPending) {
+        NativeLhdcMemoryPatch.PatchResult cachedResult = null;
         synchronized (this) {
-            if (nativePatchTerminal || nativePatchRunning) return;
-            nativePatchRunning = true;
+            if (nativePatchRunning) return;
+            NativeLhdcMemoryPatch.PatchResult previous = NativeLhdcMemoryPatch.lastResult();
+            if (nativePatchTerminal && !shouldRetryTerminalNativePatch(previous, forceIfPending)) {
+                cachedResult = previous;
+            } else {
+                nativePatchRunning = true;
+            }
+        }
+        if (cachedResult != null) {
+            sendNativePatchState(cachedResult);
+            return;
+        }
+        synchronized (this) {
+            if (!nativePatchRunning) {
+                // Terminal retry was declined with no cached result to replay.
+                return;
+            }
         }
 
         NativeLhdcMemoryPatch.PatchResult result = NativeLhdcMemoryPatch.apply();
-        MLog.event("lhdc.memory_patch",
-                "status", result.status,
-                "reason", reason,
-                "detail", result.reason,
-                "addr", result.addressHex(),
-                "patched", result.patchedCount,
-                "original", result.originalCount,
-                "success", result.success);
-        sendNativePatchState(result);
-
-        synchronized (this) {
-            nativePatchRunning = false;
-            if (result.terminal) {
-                nativePatchTerminal = true;
+        try {
+            MLog.event("lhdc.memory_patch",
+                    "status", result.status,
+                    "reason", reason,
+                    "detail", result.reason,
+                    "addr", result.addressHex(),
+                    "patched", result.patchedCount,
+                    "original", result.originalCount,
+                    "success", result.success);
+            sendNativePatchState(result);
+        } finally {
+            synchronized (this) {
+                nativePatchRunning = false;
+                nativePatchTerminal = result.terminal;
             }
         }
         if (!result.terminal && allowRetry) {
             scheduleNativeLhdcMemoryPatch(reason);
         }
+    }
+
+    private static boolean shouldRetryTerminalNativePatch(
+            NativeLhdcMemoryPatch.PatchResult previous,
+            boolean forceIfPending) {
+        if (!forceIfPending) return false;
+        if (previous == null) return true;
+        return !previous.terminal || "pending".equals(previous.status);
     }
 
     private void sendNativePatchState(NativeLhdcMemoryPatch.PatchResult result) {

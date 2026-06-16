@@ -185,6 +185,26 @@ public final class CodecLabelTable {
                 || lowByte == LHDC_QUALITY_ABR;
     }
 
+    /** Returns true when {@code specific1} can be rendered as a known quality state. */
+    public static boolean isKnownQuality(int codecType, long specific1) {
+        if (codecType == CODEC_LDAC) {
+            return specific1 == LDAC_QUALITY_HIGH
+                    || specific1 == LDAC_QUALITY_MID
+                    || specific1 == LDAC_QUALITY_LOW;
+        }
+        if (isLhdc(codecType)) {
+            long versionByte = specific1 & 0xFFL;
+            return versionByte == LHDC_QUALITY_CONNECTION
+                    || versionByte == LHDC_QUALITY_STANDARD
+                    || versionByte == LHDC_QUALITY_LOW_400
+                    || versionByte == LHDC_QUALITY_MID_500
+                    || versionByte == LHDC_QUALITY_FIXED_900
+                    || versionByte == LHDC_QUALITY_FIXED_1000
+                    || versionByte == LHDC_QUALITY_ABR;
+        }
+        return false;
+    }
+
     /** Resolve the LDAC / LHDC quality label, or fall back to {@code "档位 (rawValue)"}. */
     public static String qualityLabel(Context context, int codecType, long specific1) {
         if (codecType == CODEC_LDAC) {

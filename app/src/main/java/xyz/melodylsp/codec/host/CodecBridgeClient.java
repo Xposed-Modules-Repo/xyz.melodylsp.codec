@@ -708,7 +708,7 @@ public final class CodecBridgeClient {
                 if (future.isDone()) return;
                 CodecSnapshot s = safeReadStatus(request.mac);
                 if (s != null && matches(s, request)) {
-                    completeWith(future, WriteResult.confirmed(path), receiverRef);
+                    completeWith(future, WriteResult.confirmed(path, s), receiverRef);
                 }
             }
         };
@@ -725,7 +725,7 @@ public final class CodecBridgeClient {
             if (future.isDone()) return;
             CodecSnapshot s = safeReadStatus(request.mac);
             if (s != null && matches(s, request)) {
-                completeWith(future, WriteResult.confirmed(path), receiverRef);
+                completeWith(future, WriteResult.confirmed(path, s), receiverRef);
             } else {
                 MLog.event("write.timeout", "request", request, "live", String.valueOf(s));
                 completeWith(future, WriteResult.rolledBack(path, s), receiverRef);
@@ -801,9 +801,23 @@ public final class CodecBridgeClient {
         if (CodecLabelTable.isLhdc(request.codecType)) {
             long active = snapshot.activeCodecSpecific1 & 0xFFL;
             long requested = request.codecSpecific1 & 0xFFL;
-            return active == requested;
+            if (active == requested) return true;
+            if (lhdcCeilingMatch(requested, active)) {
+                MLog.event("write.lhdc.ceiling.accepted",
+                        "requested", requested,
+                        "active", active,
+                        "request", request,
+                        "live", snapshot);
+                return true;
+            }
+            return false;
         }
         return snapshot.activeCodecSpecific1 == request.codecSpecific1;
+    }
+
+    private static boolean lhdcCeilingMatch(long requested, long active) {
+        return requested == CodecLabelTable.LHDC_QUALITY_FIXED_1000
+                && active == CodecLabelTable.LHDC_QUALITY_FIXED_900;
     }
 
     private static boolean optionalMatches(CodecSnapshot snapshot, boolean enable) {

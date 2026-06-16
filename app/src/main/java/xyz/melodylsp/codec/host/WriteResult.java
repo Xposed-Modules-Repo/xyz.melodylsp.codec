@@ -22,7 +22,7 @@ public final class WriteResult {
 
     public final Path path;
     public final Outcome outcome;
-    /** Snapshot read after the timeout window when {@link Outcome#TIMEOUT_ROLLED_BACK}. */
+    /** Snapshot read when the write confirmed or after the timeout window, when available. */
     public final CodecSnapshot rollbackSnapshot;
     public final Throwable cause;
 
@@ -35,6 +35,10 @@ public final class WriteResult {
 
     public static WriteResult confirmed(Path path) {
         return new WriteResult(path, Outcome.CONFIRMED, null, null);
+    }
+
+    public static WriteResult confirmed(Path path, CodecSnapshot snapshot) {
+        return new WriteResult(path, Outcome.CONFIRMED, snapshot, null);
     }
 
     public static WriteResult rolledBack(Path path, CodecSnapshot snapshot) {
