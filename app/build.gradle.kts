@@ -10,8 +10,8 @@ android {
         applicationId = "xyz.melodylsp.codec"
         minSdk = 31
         targetSdk = 36
-        versionCode = 16
-        versionName = "1.8.1"
+        versionCode = 17
+        versionName = "1.8.2"
 
         externalNativeBuild {
             cmake {
