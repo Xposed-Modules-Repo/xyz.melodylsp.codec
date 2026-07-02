@@ -165,7 +165,8 @@ public final class CodecBridgeClient {
                 .handle((ignored, error) -> error)
                 .thenCompose(error -> {
                     if (error != null) {
-                        MLog.w("Path-A setCodec failed", unwrap(error));
+                        logPathAFallback("setCodec", request, unwrap(error),
+                                "bridge_settings_root");
                         if (!shouldContinue(shouldContinue)) {
                             return staleWriteResult(request, WriteResult.Path.DIRECT_API);
                         }
@@ -180,10 +181,12 @@ public final class CodecBridgeClient {
                                     return staleWriteResult(request, result.path);
                                 }
                                 if (CodecLabelTable.isLhdc(request.codecType)) {
-                                    MLog.w("Path-A LHDC accepted but not confirmed; skip bridge retry");
+                                    logUnconfirmedWrite("write.path_a.unconfirmed",
+                                            request, "skip_bridge_retry_lhdc_guard");
                                     return CompletableFuture.completedFuture(result);
                                 }
-                                MLog.w("Path-A accepted but not confirmed; trying bridge/settings/root");
+                                logUnconfirmedWrite("write.path_a.unconfirmed",
+                                        request, "bridge_settings_root");
                                 return setCodecViaBridgeOrFallback(request, shouldContinue);
                             });
                 });
@@ -200,7 +203,8 @@ public final class CodecBridgeClient {
                 .handle((ignored, error) -> error)
                 .thenCompose(error -> {
                     if (error != null) {
-                        MLog.w("Path-A setOptionalCodecs failed", unwrap(error));
+                        logPathAOptionalFallback(mac, enable, unwrap(error),
+                                "bridge_broadcast");
                         if (!shouldContinue(shouldContinue)) {
                             return staleWriteResult(mac, enable, WriteResult.Path.DIRECT_API);
                         }
@@ -215,7 +219,8 @@ public final class CodecBridgeClient {
                                 if (!shouldContinue(shouldContinue)) {
                                     return staleWriteResult(mac, enable, result.path);
                                 }
-                                MLog.w("Path-A optional codecs accepted but not confirmed; trying bridge/broadcast");
+                                logUnconfirmedOptional("write.path_a.optional_unconfirmed",
+                                        mac, enable, "bridge_broadcast");
                                 return setOptionalCodecsViaBridgeOrBroadcast(
                                         mac, enable, shouldContinue);
                             });
@@ -267,7 +272,8 @@ public final class CodecBridgeClient {
                                 if (!shouldContinue(shouldContinue)) {
                                     return staleWriteResult(mac, enable, result.path);
                                 }
-                                MLog.w("Path-B optional codecs accepted but not confirmed; trying broadcast");
+                                logUnconfirmedOptional("write.path_b.optional_unconfirmed",
+                                        mac, enable, "broadcast");
                                 return setOptionalCodecsViaBroadcast(
                                         mac, enable, shouldContinue);
                             });
@@ -330,7 +336,8 @@ public final class CodecBridgeClient {
                                 if (!shouldContinue(shouldContinue)) {
                                     return staleWriteResult(request, result.path);
                                 }
-                                MLog.w("Path-B accepted but not confirmed; trying settings/root");
+                                logUnconfirmedWrite("write.path_b.unconfirmed",
+                                        request, "settings_root");
                                 return setCodecViaSettingsOrRoot(
                                         request, WriteResult.Path.SYSTEM_BRIDGE, shouldContinue);
                             });
@@ -358,7 +365,8 @@ public final class CodecBridgeClient {
                                     if (!shouldContinue(shouldContinue)) {
                                         return staleWriteResult(request, result.path);
                                     }
-                                    MLog.w("Path-B broadcast accepted but not confirmed; trying settings/root");
+                                    logUnconfirmedWrite("write.path_b.broadcast_unconfirmed",
+                                            request, "settings_root");
                                     return setCodecViaSettingsOrRoot(
                                             request, WriteResult.Path.SYSTEM_BROADCAST,
                                             shouldContinue);
@@ -387,7 +395,8 @@ public final class CodecBridgeClient {
             return staleWriteResult(request, failedPath);
         }
         if (CodecLabelTable.isLhdc(request.codecType)) {
-            MLog.w("LHDC realtime write was not confirmed; skip settings/root reconnect fallback");
+            logUnconfirmedWrite("write.lhdc.unconfirmed",
+                    request, "skip_settings_root_reconnect_guard");
             return CompletableFuture.completedFuture(WriteResult.failed(
                     failedPath,
                     new IllegalStateException("LHDC realtime write path unavailable")));
@@ -859,6 +868,55 @@ public final class CodecBridgeClient {
                 path, new IllegalStateException("stale optional codec write")));
     }
 
+    private static void logPathAFallback(
+            String op,
+            CodecRequest request,
+            Throwable cause,
+            String next) {
+        MLog.event("write.path_a.fallback",
+                "op", op,
+                "mac", A2dpRouteReadiness.redactMac(request.mac),
+                "codec", hex(request.codecType),
+                "rate", hex(request.sampleRate),
+                "cause", compactThrowable(cause),
+                "next", next);
+    }
+
+    private static void logPathAOptionalFallback(
+            String mac,
+            boolean enable,
+            Throwable cause,
+            String next) {
+        MLog.event("write.path_a.fallback",
+                "op", "setOptionalCodecs",
+                "mac", A2dpRouteReadiness.redactMac(mac),
+                "enable", enable,
+                "cause", compactThrowable(cause),
+                "next", next);
+    }
+
+    private static void logUnconfirmedWrite(
+            String event,
+            CodecRequest request,
+            String next) {
+        MLog.event(event,
+                "mac", A2dpRouteReadiness.redactMac(request.mac),
+                "codec", hex(request.codecType),
+                "rate", hex(request.sampleRate),
+                "next", next);
+    }
+
+    private static void logUnconfirmedOptional(
+            String event,
+            String mac,
+            boolean enable,
+            String next) {
+        MLog.event(event,
+                "mac", A2dpRouteReadiness.redactMac(mac),
+                "enable", enable,
+                "next", next);
+    }
+
     private static Throwable unwrap(Throwable t) {
         Throwable cur = t;
         while (cur.getCause() != null
@@ -867,6 +925,37 @@ public final class CodecBridgeClient {
             cur = cur.getCause();
         }
         return cur;
+    }
+
+    private static String compactThrowable(Throwable t) {
+        if (t == null) return "unknown";
+        if (t instanceof BluetoothCodecReflect.BluetoothCodecReflectException) {
+            BluetoothCodecReflect.BluetoothCodecReflectException reflectError =
+                    (BluetoothCodecReflect.BluetoothCodecReflectException) t;
+            return sanitizeEventValue("reflect:"
+                    + simpleClassName(reflectError.className)
+                    + '#'
+                    + reflectError.methodName
+                    + ':'
+                    + MLog.compactThrowable(t));
+        }
+        return MLog.compactThrowable(t);
+    }
+
+    private static String simpleClassName(String name) {
+        if (name == null || name.isEmpty()) return "unknown";
+        int idx = name.lastIndexOf('.');
+        return idx >= 0 && idx + 1 < name.length() ? name.substring(idx + 1) : name;
+    }
+
+    private static String sanitizeEventValue(String value) {
+        if (value == null || value.isEmpty()) return "unknown";
+        String compact = value.replaceAll("\\s+", "_");
+        return compact.length() <= 96 ? compact : compact.substring(0, 96);
+    }
+
+    private static String hex(int value) {
+        return "0x" + Integer.toHexString(value);
     }
 
     private static boolean isCdmStatusBlock(Throwable t) {

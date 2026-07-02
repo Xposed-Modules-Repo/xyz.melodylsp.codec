@@ -2089,7 +2089,10 @@ public final class CodecController {
             boolean fromAac) {
         applyWrite(sub, request, (result, error) -> {
             if (error != null) {
-                MLog.w("High-quality fast path failed", error);
+                MLog.event("write.high_quality.fastpath.error_fallback",
+                        "mac", redactedMac(sub),
+                        "attempt", attempt,
+                        "cause", MLog.compactThrowable(error));
             } else {
                 MLog.event("write.high_quality.fastpath.fallback",
                         "outcome", result != null ? result.outcome : "unknown",
@@ -2158,7 +2161,9 @@ public final class CodecController {
                 "target", highQualityRequest);
         applyWrite(sub, warmup, (result, error) -> {
             if (error != null) {
-                MLog.w("AAC high-quality SBC warmup failed", error);
+                MLog.event("write.high_quality.aac_warmup.error_fallback",
+                        "mac", redactedMac(sub),
+                        "cause", MLog.compactThrowable(error));
             } else {
                 MLog.event("write.high_quality.aac_warmup.fallback",
                         "outcome", result != null ? result.outcome : "unknown",
@@ -2274,7 +2279,9 @@ public final class CodecController {
                 "request", request);
         applyWrite(sub, request, (result, error) -> {
             if (error != null) {
-                MLog.w("Standard fast path failed; falling back to optional codecs", error);
+                MLog.event("write.standard.fastpath.error_fallback",
+                        "mac", redactedMac(sub),
+                        "cause", MLog.compactThrowable(error));
             } else {
                 MLog.event("write.standard.fastpath.fallback",
                         "outcome", result != null ? result.outcome : "unknown",
@@ -2844,6 +2851,10 @@ public final class CodecController {
     private static int dp(Context context, int value) {
         float density = context.getResources().getDisplayMetrics().density;
         return Math.round(value * density);
+    }
+
+    private static String redactedMac(Subscription sub) {
+        return A2dpRouteReadiness.redactMac(sub != null ? sub.mac : null);
     }
 
     private final class Subscription {

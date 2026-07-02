@@ -60,6 +60,8 @@ public final class ConnectionStateReplayer {
     private final Map<String, Long> gameModeFallbackUntilMs = new HashMap<>();
 
     private BroadcastReceiver receiver;
+    private boolean bootstrapActiveQueryFallbackLogged;
+    private boolean bootstrapConnectedQueryFallbackLogged;
 
     public ConnectionStateReplayer(
             Context context,
@@ -462,12 +464,7 @@ public final class ConnectionStateReplayer {
                 Object activeDevices = getActiveDevices.invoke(adapter, BluetoothProfile.A2DP);
                 addDeviceCollection(devices, activeDevices, true);
             } catch (Throwable t) {
-                if (containsSecurityException(t)) {
-                    MLog.event("replay.bootstrap.active_denied");
-                } else {
-                    MLog.event("replay.bootstrap.active_unavailable",
-                            "error", t.getClass().getSimpleName());
-                }
+                logBootstrapActiveQueryFallback(t);
             }
         }
 
@@ -479,14 +476,32 @@ public final class ConnectionStateReplayer {
                 addDeviceCollection(devices, connected, false);
             }
         } catch (Throwable t) {
-            if (containsSecurityException(t)) {
-                MLog.event("replay.bootstrap.connected_denied");
-            } else {
-                MLog.event("replay.bootstrap.connected_unavailable",
-                        "error", t.getClass().getSimpleName());
-            }
+            logBootstrapConnectedQueryFallback(t);
         }
         return devices;
+    }
+
+    private void logBootstrapActiveQueryFallback(Throwable t) {
+        synchronized (this) {
+            if (bootstrapActiveQueryFallbackLogged) return;
+            bootstrapActiveQueryFallbackLogged = true;
+        }
+        MLog.event("replay.bootstrap.active_query_fallback",
+                "reason", bootstrapQueryFallbackReason(t));
+    }
+
+    private void logBootstrapConnectedQueryFallback(Throwable t) {
+        synchronized (this) {
+            if (bootstrapConnectedQueryFallbackLogged) return;
+            bootstrapConnectedQueryFallbackLogged = true;
+        }
+        MLog.event("replay.bootstrap.connected_query_fallback",
+                "reason", bootstrapQueryFallbackReason(t));
+    }
+
+    private static String bootstrapQueryFallbackReason(Throwable t) {
+        if (containsSecurityException(t)) return "permission";
+        return t != null ? t.getClass().getSimpleName() : "unknown";
     }
 
     private BluetoothAdapter resolveAdapter() {

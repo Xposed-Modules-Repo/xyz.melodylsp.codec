@@ -593,7 +593,10 @@ public final class DiagnosticEvents {
 
     private static boolean isRecoverableFallbackWarning(String message) {
         return message.contains("Path-A setCodec failed")
-                || message.contains("Path-A setOptionalCodecs failed");
+                || message.contains("Path-A setOptionalCodecs failed")
+                || message.contains("Path-A accepted but not confirmed")
+                || message.contains("Path-A LHDC accepted but not confirmed")
+                || message.contains("Path-A optional codecs accepted but not confirmed");
     }
 
     private static String trimRing(String value, int maxChars) {

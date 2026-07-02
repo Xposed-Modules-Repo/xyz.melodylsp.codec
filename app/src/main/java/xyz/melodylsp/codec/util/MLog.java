@@ -90,6 +90,20 @@ public final class MLog {
         emit(Log.INFO, sb.toString(), null);
     }
 
+    /** Returns a single-token throwable summary suitable for structured event values. */
+    public static String compactThrowable(Throwable t) {
+        if (t == null) return "unknown";
+        Throwable root = t;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        String message = root.getMessage();
+        String value = root.getClass().getSimpleName()
+                + (message == null || message.isEmpty() ? "" : ':' + message);
+        value = value.replaceAll("\\s+", "_");
+        return value.length() <= 96 ? value : value.substring(0, 96);
+    }
+
     private static void emit(int priority, String message, Throwable t) {
         long time = System.currentTimeMillis();
         String prefixed = prefix() + message;
