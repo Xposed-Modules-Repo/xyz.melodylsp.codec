@@ -43,6 +43,7 @@ public final class ConnectionStateReplayer {
     private static final long REPLAY_VERIFY_DELAY_MS = 2_000L;
     private static final long GAME_MODE_EXIT_REPLAY_DELAY_MS = 2_000L;
     private static final long GAME_MODE_LIVE_SBC_FALLBACK_MS = 180_000L;
+    private static final long GAME_MODE_EXIT_PROBE_DELAY_MS = 5_000L;
     private static final long[] BOOTSTRAP_SCAN_DELAYS_MS = {1_500L, 6_000L, 15_000L};
     private static final int MAX_REPLAY_WRITE_ATTEMPTS = 2;
 
@@ -249,7 +250,7 @@ public final class ConnectionStateReplayer {
         boolean suppressed;
         int activeTypeCount;
         synchronized (this) {
-            boolean wasSuppressed = isGameModeSuppressedLocked(key, now);
+            boolean wasSuppressed = isGameModeSuppressedLocked(key);
             if (active) {
                 if (!fallbackOnly) {
                     Set<Integer> activeTypes = gameModeActiveTypes.get(key);
@@ -263,6 +264,8 @@ public final class ConnectionStateReplayer {
                     long until = now + fallbackTtlMs;
                     gameModeFallbackUntilMs.put(key, until);
                     scheduleGameModeFallbackExpiry(key, until, fallbackTtlMs);
+                    scheduleGameModeFallbackExitProbe(
+                            key, until, GAME_MODE_EXIT_PROBE_DELAY_MS);
                 }
                 pendingReplays.remove(key);
                 bumpGenerationLocked(key);
@@ -283,7 +286,7 @@ public final class ConnectionStateReplayer {
                 }
                 bumpGenerationLocked(key);
             }
-            suppressed = isGameModeSuppressedLocked(key, now);
+            suppressed = isGameModeSuppressedLocked(key);
             activeTypeCount = activeGameModeTypeCountLocked(key);
             replayAfterExit = wasSuppressed && !suppressed && !active;
         }
@@ -315,19 +318,80 @@ public final class ConnectionStateReplayer {
     }
 
     private void expireGameModeFallback(String key, long expectedUntil) {
-        boolean replayAfterExpiry;
         synchronized (this) {
             Long currentUntil = gameModeFallbackUntilMs.get(key);
             if (currentUntil == null || currentUntil != expectedUntil) return;
             if (hasActiveGameModeTypesLocked(key)) return;
-            gameModeFallbackUntilMs.remove(key);
-            bumpGenerationLocked(key);
-            replayAfterExpiry = true;
         }
-        if (replayAfterExpiry) {
-            MLog.event("replay.suppress.game_fallback_expired",
+        MLog.event("game.mode.fallback.expiry_probe",
+                "mac", A2dpRouteReadiness.redactMac(key));
+        scheduleGameModeFallbackExitProbe(key, expectedUntil, 1L);
+    }
+
+    private void scheduleGameModeFallbackExitProbe(
+            String key,
+            long expectedUntil,
+            long delayMs) {
+        if (!replayEnabled) return;
+        mainHandler.postDelayed(() -> runGameModeFallbackExitProbe(key, expectedUntil),
+                Math.max(1_000L, delayMs));
+    }
+
+    private void runGameModeFallbackExitProbe(String key, long expectedUntil) {
+        synchronized (this) {
+            Long currentUntil = gameModeFallbackUntilMs.get(key);
+            if (currentUntil == null || currentUntil != expectedUntil) return;
+            if (hasActiveGameModeTypesLocked(key)) return;
+        }
+        Thread worker = new Thread(() -> probeGameModeFallbackExit(key, expectedUntil),
+                "MelodyCodecLsp-gameModeProbe");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    private void probeGameModeFallbackExit(String key, long expectedUntil) {
+        CodecSnapshot live = bridge.getStatus(key);
+        boolean stillGameMode = isGameModeSbcSnapshot(live);
+        boolean replayAfterProbe = false;
+        long nextExpectedUntil = expectedUntil;
+        synchronized (this) {
+            Long currentUntil = gameModeFallbackUntilMs.get(key);
+            if (currentUntil == null || currentUntil != expectedUntil) return;
+            if (hasActiveGameModeTypesLocked(key)) return;
+            if (stillGameMode) {
+                long now = System.currentTimeMillis();
+                if (currentUntil <= now + GAME_MODE_EXIT_PROBE_DELAY_MS) {
+                    nextExpectedUntil = now + GAME_MODE_LIVE_SBC_FALLBACK_MS;
+                    gameModeFallbackUntilMs.put(key, nextExpectedUntil);
+                    scheduleGameModeFallbackExpiry(
+                            key, nextExpectedUntil, GAME_MODE_LIVE_SBC_FALLBACK_MS);
+                }
+            } else if (live != null) {
+                gameModeFallbackUntilMs.remove(key);
+                bumpGenerationLocked(key);
+                replayAfterProbe = true;
+            }
+        }
+        if (stillGameMode) {
+            MLog.event("game.mode.probe.active",
+                    "mac", A2dpRouteReadiness.redactMac(key),
+                    "source", "live.sbc_s2_" + live.activeCodecSpecific2);
+            scheduleGameModeFallbackExitProbe(
+                    key, nextExpectedUntil, GAME_MODE_EXIT_PROBE_DELAY_MS);
+            return;
+        }
+        if (live == null) {
+            MLog.event("game.mode.probe.unavailable",
                     "mac", A2dpRouteReadiness.redactMac(key));
-            maybeReplayConnected(key, GAME_MODE_EXIT_REPLAY_DELAY_MS, "game_mode_fallback_expired");
+            scheduleGameModeFallbackExitProbe(
+                    key, expectedUntil, GAME_MODE_EXIT_PROBE_DELAY_MS);
+            return;
+        }
+        if (replayAfterProbe) {
+            MLog.event("replay.suppress.game_probe_exit",
+                    "mac", A2dpRouteReadiness.redactMac(key),
+                    "live", live);
+            maybeReplayConnected(key, GAME_MODE_EXIT_REPLAY_DELAY_MS, "game_mode_probe_exit");
         }
     }
 
@@ -376,7 +440,8 @@ public final class ConnectionStateReplayer {
                     "stored_specific1", stored.codecSpecific1,
                     "live_codec", live.activeCodecType,
                     "live_rate", live.activeSampleRate,
-                    "live_specific1", live.activeCodecSpecific1);
+                    "live_specific1", live.activeCodecSpecific1,
+                    "live_specific2", live.activeCodecSpecific2);
             maybeReplayConnected(key, REPLAY_DELAY_MS, "startup_stored_snapshot");
         }
         if (candidates > 0 || alreadySeen.isEmpty()) {
@@ -774,17 +839,17 @@ public final class ConnectionStateReplayer {
         String key = A2dpRouteReadiness.normalizeMac(mac);
         if (key == null) return false;
         synchronized (this) {
-            return isGameModeSuppressedLocked(key, System.currentTimeMillis());
+            return isGameModeSuppressedLocked(key);
         }
     }
 
-    private boolean isGameModeSuppressedLocked(String key, long now) {
+    private boolean isGameModeSuppressedLocked(String key) {
         if (hasActiveGameModeTypesLocked(key)) return true;
-        Long until = gameModeFallbackUntilMs.get(key);
-        if (until == null) return false;
-        if (until > now) return true;
-        gameModeFallbackUntilMs.remove(key);
-        return false;
+        // Do not clear the Bluetooth-observed fallback just because its TTL elapsed.
+        // The timeout only means "start probing"; clearing it here would let an unrelated
+        // replay path race ahead before we have confirmed that the live codec is no longer
+        // the official low-latency SBC marker.
+        return gameModeFallbackUntilMs.containsKey(key);
     }
 
     private boolean hasActiveGameModeTypesLocked(String key) {
