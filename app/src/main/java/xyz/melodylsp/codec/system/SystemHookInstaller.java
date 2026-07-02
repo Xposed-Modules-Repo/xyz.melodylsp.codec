@@ -534,7 +534,8 @@ public final class SystemHookInstaller {
 
     private void maybeBroadcastGameModeSbcHint(Object[] args) {
         if (args == null || args.length < 2) return;
-        if (!containsGameModeSbcConfig(args[1])) return;
+        long marker = findGameModeSbcMarker(args[1]);
+        if (marker <= 0L) return;
         String mac = macFromDeviceArg(args[0]);
         if (mac == null) return;
         Context context = appContext != null ? appContext : currentApplication();
@@ -545,31 +546,34 @@ public final class SystemHookInstaller {
         intent.putExtra(CodecIpc.EXTRA_MAC, mac);
         intent.putExtra(CodecIpc.EXTRA_GAME_MODE_ACTIVE, true);
         intent.putExtra(CodecIpc.EXTRA_GAME_MODE_TYPE, -1);
-        intent.putExtra(CodecIpc.EXTRA_GAME_MODE_SOURCE, "bt.native.sbc_s2_3");
+        intent.putExtra(CodecIpc.EXTRA_GAME_MODE_SOURCE, "bt.native.sbc_s2_" + marker);
         intent.putExtra(CodecIpc.EXTRA_GAME_MODE_TTL_MS, GAME_MODE_SBC_FALLBACK_TTL_MS);
         try {
             context.sendBroadcast(intent);
             MLog.event("game.mode.bt_hint",
                     "mac", redactMac(mac),
+                    "s2", marker,
                     "ttlMs", GAME_MODE_SBC_FALLBACK_TTL_MS);
         } catch (Throwable t) {
             MLog.w("game mode SBC hint broadcast failed", t);
         }
     }
 
-    private static boolean containsGameModeSbcConfig(Object configs) {
-        if (configs == null || !configs.getClass().isArray()) return false;
+    private static long findGameModeSbcMarker(Object configs) {
+        if (configs == null || !configs.getClass().isArray()) return 0L;
         int length = Array.getLength(configs);
         for (int i = 0; i < length; i++) {
-            if (isGameModeSbcConfig(Array.get(configs, i))) return true;
+            long marker = gameModeSbcMarker(Array.get(configs, i));
+            if (marker > 0L) return marker;
         }
-        return false;
+        return 0L;
     }
 
-    private static boolean isGameModeSbcConfig(Object config) {
-        if (config == null) return false;
-        return readInt(config, "getCodecType") == 0
-                && readLong(config, "getCodecSpecific2") == 3L;
+    private static long gameModeSbcMarker(Object config) {
+        if (config == null) return 0L;
+        if (readInt(config, "getCodecType") != 0) return 0L;
+        long marker = readLong(config, "getCodecSpecific2");
+        return marker > 0L ? marker : 0L;
     }
 
     private static String macFromDeviceArg(Object device) {

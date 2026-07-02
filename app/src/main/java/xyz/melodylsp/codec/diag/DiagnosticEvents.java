@@ -555,6 +555,7 @@ public final class DiagnosticEvents {
                 && message.contains("active=false"))
                 || message.contains("evt=dexkit.bridge.created")
                 || message.contains("evt=dexkit.bridge.closed")
+                || message.contains("evt=dexkit.native.loaded")
                 || message.contains("evt=dexkit.find.classes")
                 || message.contains("evt=remember.write.delayed_confirmed")
                 || message.contains("status=patched")

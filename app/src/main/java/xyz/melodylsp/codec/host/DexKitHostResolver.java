@@ -1,5 +1,6 @@
 package xyz.melodylsp.codec.host;
 
+import java.io.File;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -20,12 +21,19 @@ final class DexKitHostResolver implements AutoCloseable {
 
     private static volatile boolean libraryLoaded;
 
-    private final String apkPath;
+    private final String hostApkPath;
+    private final String moduleNativeLibraryDir;
+    private final String moduleApkPath;
     private Object bridge;
     private boolean unavailable;
 
-    DexKitHostResolver(String apkPath) {
-        this.apkPath = apkPath;
+    DexKitHostResolver(
+            String hostApkPath,
+            String moduleNativeLibraryDir,
+            String moduleApkPath) {
+        this.hostApkPath = hostApkPath;
+        this.moduleNativeLibraryDir = moduleNativeLibraryDir;
+        this.moduleApkPath = moduleApkPath;
     }
 
     List<String> findClassesUsingStrings(
@@ -65,15 +73,15 @@ final class DexKitHostResolver implements AutoCloseable {
     private boolean ensureBridge() {
         if (bridge != null) return true;
         if (unavailable) return false;
-        if (apkPath == null || apkPath.isEmpty()) {
+        if (hostApkPath == null || hostApkPath.isEmpty()) {
             unavailable = true;
             MLog.event("dexkit.unavailable", "reason", "empty_apk_path");
             return false;
         }
         try {
-            loadLibraryOnce();
+            loadLibraryOnce(moduleNativeLibraryDir, moduleApkPath);
             Class<?> bridgeClass = Class.forName("org.luckypray.dexkit.DexKitBridge");
-            bridge = bridgeClass.getMethod("create", String.class).invoke(null, apkPath);
+            bridge = bridgeClass.getMethod("create", String.class).invoke(null, hostApkPath);
             MLog.event("dexkit.bridge.created");
             return true;
         } catch (Throwable t) {
@@ -83,13 +91,54 @@ final class DexKitHostResolver implements AutoCloseable {
         }
     }
 
-    private static void loadLibraryOnce() {
+    private static void loadLibraryOnce(String moduleNativeLibraryDir, String moduleApkPath) {
         if (libraryLoaded) return;
         synchronized (DexKitHostResolver.class) {
             if (libraryLoaded) return;
-            System.loadLibrary("dexkit");
-            libraryLoaded = true;
+            Throwable pathError = null;
+            String nativePath = dexKitNativePath(moduleNativeLibraryDir);
+            if (nativePath != null) {
+                try {
+                    File lib = new File(nativePath);
+                    if (lib.isFile()) {
+                        System.load(lib.getAbsolutePath());
+                        libraryLoaded = true;
+                        MLog.event("dexkit.native.loaded",
+                                "source", "module_native_dir",
+                                "path", lib.getAbsolutePath());
+                        return;
+                    }
+                    pathError = new UnsatisfiedLinkError("missing " + nativePath);
+                } catch (Throwable t) {
+                    pathError = t;
+                }
+            }
+
+            try {
+                System.loadLibrary("dexkit");
+                libraryLoaded = true;
+                MLog.event("dexkit.native.loaded",
+                        "source", nativePath != null
+                                ? "loadLibrary_after_module_native_dir"
+                                : "loadLibrary",
+                        "moduleApk", moduleApkPath != null && !moduleApkPath.isEmpty());
+            } catch (Throwable t) {
+                UnsatisfiedLinkError combined = new UnsatisfiedLinkError(
+                        "dexkit native load failed; nativeDir="
+                                + (moduleNativeLibraryDir != null && !moduleNativeLibraryDir.isEmpty())
+                                + " moduleApk=" + (moduleApkPath != null && !moduleApkPath.isEmpty())
+                                + " path=" + describeThrowable(pathError)
+                                + " loadLibrary=" + describeThrowable(t));
+                if (pathError != null) combined.addSuppressed(pathError);
+                combined.addSuppressed(t);
+                throw combined;
+            }
         }
+    }
+
+    private static String dexKitNativePath(String moduleNativeLibraryDir) {
+        if (moduleNativeLibraryDir == null || moduleNativeLibraryDir.isEmpty()) return null;
+        return moduleNativeLibraryDir + File.separator + "libdexkit.so";
     }
 
     private static Object create(String className) throws Exception {
@@ -236,6 +285,11 @@ final class DexKitHostResolver implements AutoCloseable {
             sb.append(",...");
         }
         return sb.toString();
+    }
+
+    private static String describeThrowable(Throwable t) {
+        if (t == null) return "none";
+        return t.getClass().getSimpleName() + ":" + t.getMessage();
     }
 
     @Override

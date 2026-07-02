@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothProfile;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.os.Bundle;
 import android.os.Handler;
@@ -125,7 +126,18 @@ public final class HostHookInstaller {
             String hostApkPath) {
         this.module = module;
         this.classLoader = classLoader;
-        this.dexKit = new DexKitHostResolver(hostApkPath);
+        String moduleNativeLibraryDir = null;
+        String moduleApkPath = null;
+        try {
+            ApplicationInfo moduleInfo = module.getModuleApplicationInfo();
+            if (moduleInfo != null) {
+                moduleNativeLibraryDir = moduleInfo.nativeLibraryDir;
+                moduleApkPath = moduleInfo.sourceDir;
+            }
+        } catch (Throwable t) {
+            MLog.w("DexKit module application info unavailable", t);
+        }
+        this.dexKit = new DexKitHostResolver(hostApkPath, moduleNativeLibraryDir, moduleApkPath);
     }
 
     public void install() {

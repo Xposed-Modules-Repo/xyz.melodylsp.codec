@@ -185,8 +185,6 @@ public final class ConnectionStateReplayer {
         if (key == null) return;
         synchronized (this) {
             pendingReplays.remove(key);
-            gameModeActiveTypes.remove(key);
-            gameModeFallbackUntilMs.remove(key);
             bumpGenerationLocked(key);
         }
         routeReadiness.markDisconnected(key);
@@ -269,16 +267,20 @@ public final class ConnectionStateReplayer {
                 pendingReplays.remove(key);
                 bumpGenerationLocked(key);
             } else {
+                boolean removedActiveType = false;
                 Set<Integer> activeTypes = gameModeActiveTypes.get(key);
                 if (activeTypes != null) {
-                    activeTypes.remove(type);
+                    removedActiveType = activeTypes.remove(type);
                     if (activeTypes.isEmpty()) {
                         gameModeActiveTypes.remove(key);
                     }
                 }
-                // A host-side false state is the authoritative "game really exited" signal.
-                // Do not let the bluetooth-process SBC fallback TTL delay restoration afterward.
-                gameModeFallbackUntilMs.remove(key);
+                // A matching host-side false state is the authoritative "game really exited"
+                // signal. Ignore unmatched false/init pulses so they cannot clear the Bluetooth
+                // SBC fallback while a backgrounded game is still holding the low-latency route.
+                if (removedActiveType) {
+                    gameModeFallbackUntilMs.remove(key);
+                }
                 bumpGenerationLocked(key);
             }
             suppressed = isGameModeSuppressedLocked(key, now);
@@ -592,7 +594,7 @@ public final class ConnectionStateReplayer {
                     mac,
                     -1,
                     true,
-                    "live.sbc_s2_3",
+                    "live.sbc_s2_" + live.activeCodecSpecific2,
                     GAME_MODE_LIVE_SBC_FALLBACK_MS);
             return;
         }
@@ -808,7 +810,7 @@ public final class ConnectionStateReplayer {
     private static boolean isGameModeSbcSnapshot(CodecSnapshot snapshot) {
         return snapshot != null
                 && snapshot.activeCodecType == CodecLabelTable.CODEC_SBC
-                && snapshot.activeCodecSpecific2 == 3L;
+                && snapshot.activeCodecSpecific2 > 0L;
     }
 
     private static boolean sameRememberedValue(
