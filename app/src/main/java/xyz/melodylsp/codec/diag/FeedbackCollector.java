@@ -72,9 +72,16 @@ public final class FeedbackCollector {
             "max bit rate",
             "codec_specific_1",
             "lhdc.memory_patch",
+            "remember.snapshot",
+            "remember.set",
             "remember.write",
+            "replay.bootstrap",
+            "replay.schedule",
             "replay.dispatch",
             "replay.outcome",
+            "replay.retry",
+            "replay.stable",
+            "replay.unstable",
             "write.timeout",
             "ignore target bitrate"
     };
@@ -108,6 +115,8 @@ public final class FeedbackCollector {
     public static String collect(Context context) throws Exception {
         String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(new Date());
         String name = "OPlusHeadsetAudioHelper-feedback-" + stamp + ".zip";
+        DiagnosticEvents.requestRememberedSnapshot(context);
+        sleepQuietly(900L);
         OutputTarget target = openTarget(context, name);
         try {
             ZipOutputStream zip = new ZipOutputStream(target.stream);
@@ -118,6 +127,7 @@ public final class FeedbackCollector {
             write(zip, "timeline.txt", diag.getString(DiagnosticEvents.KEY_EVENTS, ""));
             write(zip, "events.jsonl", diag.getString(DiagnosticEvents.KEY_EVENTS_JSON, ""));
             write(zip, "state.json", buildStateJson(context, diag));
+            write(zip, "memory.txt", buildMemoryReport(diag));
             write(zip, "prefs.txt", buildPrefsDump(context, diag));
 
             String moduleLogcat = collectModuleLogcat();
@@ -215,11 +225,25 @@ public final class FeedbackCollector {
         for (String key : STATUS_KEYS) {
             appendStatus(sb, sp, key, key);
         }
+        sb.append("\nRemembered codec memory\n");
+        sb.append(DiagnosticEvents.rememberedSummary(sp)).append('\n');
+        sb.append("\nLast remembered replay chain\n");
+        sb.append(DiagnosticEvents.replayChain(sp)).append('\n');
         sb.append("\nRaw diagnostics SharedPreferences\n");
         appendPrefs(sb, sp);
         sb.append("\nEvent ring\n");
         sb.append(sp.getString(DiagnosticEvents.KEY_EVENTS, ""));
         sb.append('\n');
+        return sb.toString();
+    }
+
+    private static String buildMemoryReport(SharedPreferences diag) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Remembered codec memory\n");
+        sb.append("Source: Melody private SharedPreferences snapshot mirrored by host hook.\n\n");
+        sb.append(DiagnosticEvents.rememberedSummary(diag)).append("\n\n");
+        sb.append("Last remembered replay chain\n");
+        sb.append(DiagnosticEvents.replayChain(diag)).append('\n');
         return sb.toString();
     }
 
@@ -232,7 +256,8 @@ public final class FeedbackCollector {
         appendPrefs(sb, diag);
         sb.append("\n");
         sb.append("Note: host-app per-device remembered codec preferences live in the host app data. ")
-                .append("They are mirrored here through remember.write events when the hook runs.\n");
+                .append("The current values above are mirrored from Melody private prefs through ")
+                .append("remember.snapshot.* events when the hook runs.\n");
         return sb.toString();
     }
 
@@ -436,6 +461,14 @@ public final class FeedbackCollector {
             return "command failed: " + t + '\n';
         } finally {
             if (process != null) process.destroy();
+        }
+    }
+
+    private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 

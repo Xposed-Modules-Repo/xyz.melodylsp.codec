@@ -1,7 +1,10 @@
 package xyz.melodylsp.codec.host;
 
 import android.app.Application;
+import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothManager;
+import android.bluetooth.BluetoothProfile;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -9,7 +12,9 @@ import android.content.IntentFilter;
 import android.os.Handler;
 import android.os.Looper;
 
+import java.lang.reflect.Method;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import xyz.melodylsp.codec.bridge.CodecRequest;
@@ -33,6 +38,7 @@ public final class ConnectionStateReplayer {
 
     private static final long REPLAY_DELAY_MS = 1_500L;
     private static final long REPLAY_VERIFY_DELAY_MS = 2_000L;
+    private static final long[] BOOTSTRAP_SCAN_DELAYS_MS = {1_500L, 6_000L, 15_000L};
     private static final int MAX_REPLAY_WRITE_ATTEMPTS = 2;
 
     private final Context context;
@@ -93,6 +99,7 @@ public final class ConnectionStateReplayer {
         MLog.event("replay.receiver.started",
                 "process", processName,
                 "replay", replayEnabled);
+        scheduleBootstrapScans();
     }
 
     public void stop() {
@@ -108,6 +115,25 @@ public final class ConnectionStateReplayer {
         String key = A2dpRouteReadiness.normalizeMac(mac);
         if (key == null) return;
         routeReadiness.markConnected(key);
+        maybeReplayConnected(key, REPLAY_DELAY_MS, "connected_ready");
+    }
+
+    private void handleBootstrapConnected(String mac, boolean active, int pass) {
+        String key = A2dpRouteReadiness.normalizeMac(mac);
+        if (key == null) return;
+        if (active) {
+            routeReadiness.markReady(key, "startup_scan_active");
+        }
+        MLog.event("replay.bootstrap.connected",
+                "mac", A2dpRouteReadiness.redactMac(key),
+                "active", active,
+                "pass", pass);
+        maybeReplayConnected(key, REPLAY_DELAY_MS, active
+                ? "startup_scan_active"
+                : "startup_scan_connected");
+    }
+
+    private void maybeReplayConnected(String key, long delayMs, String reason) {
         if (!replayEnabled) {
             MLog.event("replay.skip.process",
                     "mac", A2dpRouteReadiness.redactMac(key),
@@ -115,14 +141,16 @@ public final class ConnectionStateReplayer {
             return;
         }
         if (!prefs.isRemembered(key)) {
-            MLog.d("connected mac=" + A2dpRouteReadiness.redactMac(key)
-                    + " remember=false; no replay");
+            MLog.event("replay.skip.no_remember",
+                    "mac", A2dpRouteReadiness.redactMac(key),
+                    "reason", reason);
             return;
         }
         PreferenceStore.RememberedValue value = prefs.readSnapshot(key);
         if (value == null) {
-            MLog.d("connected mac=" + A2dpRouteReadiness.redactMac(key)
-                    + " remember=true but snapshot missing");
+            MLog.event("replay.skip.snapshot_missing",
+                    "mac", A2dpRouteReadiness.redactMac(key),
+                    "reason", reason);
             return;
         }
         if (!routeReadiness.isReadyOrUnknown(key)) {
@@ -131,10 +159,11 @@ public final class ConnectionStateReplayer {
                 bumpGenerationLocked(key);
             }
             MLog.event("replay.pending_ready",
-                    "mac", A2dpRouteReadiness.redactMac(key));
+                    "mac", A2dpRouteReadiness.redactMac(key),
+                    "reason", reason);
             return;
         }
-        scheduleReplay(key, value, REPLAY_DELAY_MS, "connected_ready");
+        scheduleReplay(key, value, delayMs, reason);
     }
 
     private void handleDisconnected(String mac) {
@@ -167,6 +196,159 @@ public final class ConnectionStateReplayer {
         if (pending != null) {
             scheduleReplay(key, pending, REPLAY_DELAY_MS, "active_ready");
         }
+    }
+
+    private void scheduleBootstrapScans() {
+        if (!replayEnabled) return;
+        for (int i = 0; i < BOOTSTRAP_SCAN_DELAYS_MS.length; i++) {
+            final int pass = i + 1;
+            long delayMs = BOOTSTRAP_SCAN_DELAYS_MS[i];
+            mainHandler.postDelayed(() -> runBootstrapScan(pass), delayMs);
+        }
+    }
+
+    private void runBootstrapScan(int pass) {
+        Thread worker = new Thread(() -> {
+            Map<String, Boolean> devices = queryCurrentA2dpDevices();
+            MLog.event("replay.bootstrap.scan",
+                    "pass", pass,
+                    "count", devices.size());
+            for (Map.Entry<String, Boolean> entry : devices.entrySet()) {
+                handleBootstrapConnected(entry.getKey(), entry.getValue(), pass);
+            }
+            probeRememberedDevices(pass, devices);
+        }, "MelodyCodecLsp-replayBootstrap");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    private void probeRememberedDevices(int pass, Map<String, Boolean> alreadySeen) {
+        String[] rememberedMacs = prefs.rememberedMacs();
+        int candidates = 0;
+        int matched = 0;
+        for (String mac : rememberedMacs) {
+            String key = A2dpRouteReadiness.normalizeMac(mac);
+            if (key == null || alreadySeen.containsKey(key)) continue;
+            PreferenceStore.RememberedValue stored = prefs.readSnapshot(key);
+            if (stored == null) continue;
+            candidates++;
+            CodecSnapshot live = bridge.getStatus(key);
+            if (live == null) continue;
+            matched++;
+            MLog.event("replay.bootstrap.remembered_status",
+                    "mac", A2dpRouteReadiness.redactMac(key),
+                    "pass", pass,
+                    "codec", live.activeCodecType,
+                    "rate", live.activeSampleRate,
+                    "specific1", live.activeCodecSpecific1);
+            maybeReplayConnected(key, REPLAY_DELAY_MS, "startup_remembered_status");
+        }
+        if (candidates > 0 || alreadySeen.isEmpty()) {
+            MLog.event("replay.bootstrap.remembered_probe",
+                    "pass", pass,
+                    "candidates", candidates,
+                    "matched", matched);
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private Map<String, Boolean> queryCurrentA2dpDevices() {
+        Map<String, Boolean> devices = new HashMap<>();
+        BluetoothAdapter adapter = resolveAdapter();
+        if (adapter != null) {
+            try {
+                Method getActiveDevices = adapter.getClass().getMethod("getActiveDevices", int.class);
+                Object activeDevices = getActiveDevices.invoke(adapter, BluetoothProfile.A2DP);
+                addDeviceCollection(devices, activeDevices, true);
+            } catch (Throwable t) {
+                if (containsSecurityException(t)) {
+                    MLog.event("replay.bootstrap.active_denied");
+                } else {
+                    MLog.event("replay.bootstrap.active_unavailable",
+                            "error", t.getClass().getSimpleName());
+                }
+            }
+        }
+
+        try {
+            Object service = context.getSystemService(Context.BLUETOOTH_SERVICE);
+            if (service instanceof BluetoothManager) {
+                List<BluetoothDevice> connected =
+                        ((BluetoothManager) service).getConnectedDevices(BluetoothProfile.A2DP);
+                addDeviceCollection(devices, connected, false);
+            }
+        } catch (Throwable t) {
+            if (containsSecurityException(t)) {
+                MLog.event("replay.bootstrap.connected_denied");
+            } else {
+                MLog.event("replay.bootstrap.connected_unavailable",
+                        "error", t.getClass().getSimpleName());
+            }
+        }
+        return devices;
+    }
+
+    private BluetoothAdapter resolveAdapter() {
+        try {
+            Object service = context.getSystemService(Context.BLUETOOTH_SERVICE);
+            if (service instanceof BluetoothManager) {
+                BluetoothAdapter adapter = ((BluetoothManager) service).getAdapter();
+                if (adapter != null) return adapter;
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            return BluetoothAdapter.getDefaultAdapter();
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static void addDeviceCollection(
+            Map<String, Boolean> out,
+            Object devices,
+            boolean active) {
+        if (devices == null) return;
+        if (devices instanceof Iterable<?>) {
+            for (Object item : (Iterable<?>) devices) {
+                addDevice(out, item, active);
+            }
+            return;
+        }
+        Class<?> cls = devices.getClass();
+        if (!cls.isArray()) return;
+        int len = java.lang.reflect.Array.getLength(devices);
+        for (int i = 0; i < len; i++) {
+            addDevice(out, java.lang.reflect.Array.get(devices, i), active);
+        }
+    }
+
+    private static void addDevice(Map<String, Boolean> out, Object item, boolean active) {
+        String mac = macFromObject(item);
+        if (mac == null) return;
+        Boolean oldActive = out.get(mac);
+        out.put(mac, Boolean.TRUE.equals(oldActive) || active);
+    }
+
+    private static String macFromObject(Object item) {
+        if (item == null) return null;
+        if (item instanceof BluetoothDevice) {
+            try {
+                return A2dpRouteReadiness.normalizeMac(((BluetoothDevice) item).getAddress());
+            } catch (Throwable ignored) {
+                return null;
+            }
+        }
+        return A2dpRouteReadiness.normalizeMac(String.valueOf(item));
+    }
+
+    private static boolean containsSecurityException(Throwable t) {
+        Throwable cur = t;
+        while (cur != null) {
+            if (cur instanceof SecurityException) return true;
+            cur = cur.getCause();
+        }
+        return false;
     }
 
     private void scheduleReplay(
@@ -281,10 +463,16 @@ public final class ConnectionStateReplayer {
             return;
         }
 
-        boolean specific1Selectable = isSpecific1Selectable(live, stored.codecSpecific1);
-        boolean sampleRateSelectable = isSampleRateSelectable(live, stored.sampleRate);
+        int replayCodecType = replayCodecType(live, stored.codecType);
+        boolean codecSelectable = replayCodecType >= 0
+                && !sameCodecFamily(live.activeCodecType, replayCodecType);
+        int requestCodecType = replayCodecType >= 0 ? replayCodecType : live.activeCodecType;
+        boolean specific1Selectable =
+                isSpecific1Selectable(live, requestCodecType, stored.codecSpecific1);
+        boolean sampleRateSelectable =
+                isSampleRateSelectable(live, requestCodecType, stored.sampleRate);
 
-        if (!specific1Selectable && !sampleRateSelectable) {
+        if (!codecSelectable && !specific1Selectable && !sampleRateSelectable) {
             MLog.event("replay.skip.both",
                     "mac", mac,
                     "stored_codec", stored.codecType,
@@ -295,6 +483,17 @@ public final class ConnectionStateReplayer {
         }
 
         CodecRequest.Builder builder = CodecRequest.fromActive(live);
+        if (codecSelectable) {
+            int capIndex = selectableCodecIndex(live, requestCodecType);
+            builder.codecType(requestCodecType)
+                    .codecSpecific2(0L)
+                    .codecSpecific3(0L)
+                    .codecSpecific4(0L)
+                    .bitsPerSample(firstBit(selectableIntValue(
+                            live.selectableCodecBitsPerSample, capIndex)))
+                    .channelMode(firstBit(selectableIntValue(
+                            live.selectableCodecChannelModes, capIndex)));
+        }
         if (specific1Selectable) builder.withSpecific1(stored.codecSpecific1);
         if (sampleRateSelectable) builder.withSampleRate(stored.sampleRate);
 
@@ -309,6 +508,7 @@ public final class ConnectionStateReplayer {
             long generation,
             int attempt) {
         MLog.event("replay.dispatch",
+                "mac", A2dpRouteReadiness.redactMac(mac),
                 "attempt", attempt,
                 "request", req);
         bridge.setCodec(req, () -> isReplayStillCurrent(mac, stored, generation))
@@ -317,15 +517,12 @@ public final class ConnectionStateReplayer {
                 MLog.e("replay future failed", throwable);
             } else {
                 MLog.event("replay.outcome",
+                        "mac", A2dpRouteReadiness.redactMac(mac),
                         "attempt", attempt,
                         "path", result != null ? result.path : "unknown",
                         "outcome", result != null ? result.outcome : "null");
             }
-            if (throwable != null
-                    || result == null
-                    || result.outcome != WriteResult.Outcome.CONFIRMED) {
-                scheduleReplayRetry(mac, stored, generation, attempt);
-            }
+            scheduleReplayRetry(mac, stored, generation, attempt);
         });
     }
 
@@ -444,20 +641,62 @@ public final class ConnectionStateReplayer {
         return false;
     }
 
-    private static boolean isSpecific1Selectable(CodecSnapshot live, long value) {
-        if (live == null) return false;
-        if (arrayContains(live.selectableCodecSpecific1, value)) return true;
-        return CodecLabelTable.isLhdc(live.activeCodecType)
-                || live.activeCodecType == CodecLabelTable.CODEC_LDAC;
+    private static int replayCodecType(CodecSnapshot live, int storedCodecType) {
+        if (live == null || storedCodecType < 0) return -1;
+        if (sameCodecFamily(live.activeCodecType, storedCodecType)) {
+            return live.activeCodecType;
+        }
+        int index = selectableCodecIndex(live, storedCodecType);
+        if (index >= 0) return live.selectableCodecTypes[index];
+        if (!isStandardCodec(storedCodecType)) return storedCodecType;
+        return -1;
     }
 
-    private static boolean isSampleRateSelectable(CodecSnapshot live, int value) {
+    private static int selectableCodecIndex(CodecSnapshot live, int codecType) {
+        if (live == null || live.selectableCodecTypes == null) return -1;
+        for (int i = 0; i < live.selectableCodecTypes.length; i++) {
+            if (live.selectableCodecTypes[i] == codecType) return i;
+        }
+        if (CodecLabelTable.isLhdc(codecType)) {
+            for (int i = 0; i < live.selectableCodecTypes.length; i++) {
+                if (CodecLabelTable.isLhdc(live.selectableCodecTypes[i])) return i;
+            }
+        }
+        return -1;
+    }
+
+    private static int selectableIntValue(int[] values, int index) {
+        if (values == null || index < 0 || index >= values.length) return 0;
+        return values[index];
+    }
+
+    private static int firstBit(int mask) {
+        if (mask == 0) return 0;
+        return mask & -mask;
+    }
+
+    private static boolean isSpecific1Selectable(CodecSnapshot live, int codecType, long value) {
+        if (live == null) return false;
+        if (value < 0L) return false;
+        if (arrayContains(live.selectableCodecSpecific1, value)) return true;
+        return CodecLabelTable.isLhdc(codecType)
+                || codecType == CodecLabelTable.CODEC_LDAC;
+    }
+
+    private static boolean isSampleRateSelectable(CodecSnapshot live, int codecType, int value) {
         if (live == null) return false;
         if (value == 0) return true;
-        int mask = live.selectableSampleRateMask;
+        int index = selectableCodecIndex(live, codecType);
+        int mask = selectableIntValue(live.selectableCodecSampleRates, index);
+        if (mask == 0 && sameCodecFamily(live.activeCodecType, codecType)) {
+            mask = live.selectableSampleRateMask;
+        }
         if ((mask & value) != 0) return true;
-        return CodecLabelTable.isLhdc(live.activeCodecType)
-                && (value == 0x2 || value == 0x8 || value == 0x20);
+        if (CodecLabelTable.isLhdc(codecType)) {
+            return value == 0x2 || value == 0x8 || value == 0x20;
+        }
+        return codecType == CodecLabelTable.CODEC_LDAC
+                && (value == 0x2 || value == 0x8);
     }
 
     private static String resolveProcessName(Context context) {

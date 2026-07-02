@@ -10,10 +10,14 @@ import java.util.Date;
 import java.util.Locale;
 
 import xyz.melodylsp.codec.BuildConfig;
+import xyz.melodylsp.codec.bridge.CodecSnapshot;
+import xyz.melodylsp.codec.label.CodecLabelTable;
 
 public final class DiagnosticEvents {
 
     public static final String ACTION = BuildConfig.APPLICATION_ID + ".action.DIAGNOSTIC_EVENT";
+    public static final String ACTION_MEMORY_SNAPSHOT_REQUEST =
+            BuildConfig.APPLICATION_ID + ".action.REQUEST_MEMORY_SNAPSHOT";
     public static final String PREFS = "diagnostics";
     public static final String KEY_EVENTS = "events";
     public static final String KEY_EVENTS_JSON = "events_jsonl";
@@ -26,6 +30,13 @@ public final class DiagnosticEvents {
 
     private static final int MAX_EVENTS_CHARS = 256_000;
     private static final int MAX_EVENTS_JSON_CHARS = 256_000;
+    private static final int MAX_MEMORY_REPLAY_CHARS = 32_000;
+    private static final String KEY_MEMORY_DEVICE_LIST = "memory.devices";
+    private static final String KEY_MEMORY_SNAPSHOT_TIME = "memory.snapshot.time";
+    private static final String KEY_MEMORY_SNAPSHOT_REASON = "memory.snapshot.reason";
+    private static final String KEY_MEMORY_SNAPSHOT_COUNT = "memory.snapshot.count";
+    private static final String KEY_MEMORY_REPLAY_CHAIN = "memory.replay.chain";
+    private static final String KEY_MEMORY_REPLAY_TIME = "memory.replay.time";
 
     private DiagnosticEvents() {
     }
@@ -48,6 +59,16 @@ public final class DiagnosticEvents {
             intent.putExtra(EXTRA_PRIORITY, priority);
             intent.putExtra(EXTRA_MESSAGE, message);
             intent.putExtra(EXTRA_TIME, time > 0L ? time : System.currentTimeMillis());
+            context.sendBroadcast(intent);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    public static void requestRememberedSnapshot(Context context) {
+        if (context == null) return;
+        try {
+            Intent intent = new Intent(ACTION_MEMORY_SNAPSHOT_REQUEST);
+            intent.setPackage("com.oplus.melody");
             context.sendBroadcast(intent);
         } catch (Throwable ignored) {
         }
@@ -114,6 +135,7 @@ public final class DiagnosticEvents {
                 .putString("last.message", message)
                 .putLong("last.time", time);
         classify(editor, message, priority, time);
+        mirrorMemory(sp, editor, message, time);
         editor.apply();
     }
 
@@ -127,6 +149,65 @@ public final class DiagnosticEvents {
 
     public static long time(SharedPreferences sp, String key) {
         return sp.getLong("time." + key, 0L);
+    }
+
+    public static String rememberedSummary(SharedPreferences sp) {
+        String devices = sp.getString(KEY_MEMORY_DEVICE_LIST, "");
+        long snapshotTime = sp.getLong(KEY_MEMORY_SNAPSHOT_TIME, 0L);
+        String reason = sp.getString(KEY_MEMORY_SNAPSHOT_REASON, "");
+        int snapshotCount = sp.getInt(KEY_MEMORY_SNAPSHOT_COUNT, -1);
+        if (devices == null || devices.trim().isEmpty()) {
+            if (snapshotTime > 0L && snapshotCount == 0) {
+                StringBuilder empty = new StringBuilder();
+                empty.append("来源：Melody 私有 SharedPreferences @ ")
+                        .append(formatTime(snapshotTime));
+                if (reason != null && !reason.isEmpty()) empty.append(" / ").append(reason);
+                empty.append("\nMelody prefs 当前没有任何耳机记忆记录。");
+                return empty.toString();
+            }
+            return "暂未收到 Melody 私有数据里的真实记忆快照。请先打开/重启无线耳机 App，让 hook 进程启动；也可以点刷新后等待一两秒。";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("来源：Melody 私有 SharedPreferences");
+        if (snapshotTime > 0L) sb.append(" @ ").append(formatTime(snapshotTime));
+        if (reason != null && !reason.isEmpty()) sb.append(" / ").append(reason);
+        String[] suffixes = devices.split("\\n");
+        for (String suffix : suffixes) {
+            if (suffix == null || suffix.trim().isEmpty()) continue;
+            String prefix = memoryPrefix(suffix.trim());
+            String mac = sp.getString(prefix + "mac", suffix.trim());
+            boolean remembered = sp.getBoolean(prefix + "remembered", false);
+            boolean hasSnapshot = sp.getBoolean(prefix + "hasSnapshot", false);
+            long updated = sp.getLong(prefix + "time", 0L);
+            sb.append("\n\n").append(mac).append("：");
+            if (!remembered) {
+                sb.append("记忆关闭");
+                if (updated > 0L) sb.append(" @ ").append(formatTime(updated));
+                continue;
+            }
+            if (!hasSnapshot || !sp.contains(prefix + "codec")) {
+                sb.append("记忆已开启，但 Melody prefs 里缺少具体挡位快照");
+                if (updated > 0L) sb.append(" @ ").append(formatTime(updated));
+                continue;
+            }
+            int codec = sp.getInt(prefix + "codec", -1);
+            long specific1 = sp.getLong(prefix + "specific1", -1L);
+            int rate = sp.getInt(prefix + "rate", -1);
+            sb.append(memoryValueLabel(codec, specific1, rate));
+            if (updated > 0L) sb.append("\n  更新时间：").append(formatTime(updated));
+            sb.append("\n  raw: codec=").append(codec)
+                    .append(" specific1=").append(specific1)
+                    .append(" rate=0x").append(Integer.toHexString(rate));
+        }
+        return sb.length() > 0 ? sb.toString() : "暂无记忆镜像。";
+    }
+
+    public static String replayChain(SharedPreferences sp) {
+        String chain = sp.getString(KEY_MEMORY_REPLAY_CHAIN, "");
+        if (chain == null || chain.trim().isEmpty()) {
+            return "暂无记忆恢复链路。下次耳机连接、重启后自动连接或手动恢复时会记录。";
+        }
+        return chain.trim();
     }
 
     public static String formatTime(long time) {
@@ -201,7 +282,8 @@ public final class DiagnosticEvents {
             mark(editor, "codec.write", stateFromMessage(message), message, time);
         }
         if (message.contains("evt=remember.write")
-                || message.contains("evt=remember.set")) {
+                || message.contains("evt=remember.set")
+                || message.contains("evt=remember.snapshot.")) {
             mark(editor, "remember.write", stateFromMessage(message), message, time);
         }
         if (message.contains("evt=replay.")) {
@@ -211,6 +293,121 @@ public final class DiagnosticEvents {
             String key = priority >= Log.ERROR ? "last.error" : "last.warning";
             mark(editor, key, priority >= Log.ERROR ? "error" : "warning", message, time);
         }
+    }
+
+    private static void mirrorMemory(
+            SharedPreferences sp,
+            SharedPreferences.Editor editor,
+            String message,
+            long time) {
+        String event = eventName(message);
+        if (event == null || event.isEmpty()) return;
+        if ("remember.snapshot.begin".equals(event)) {
+            mirrorRememberSnapshotBegin(sp, editor, message, time);
+        } else if ("remember.snapshot.item".equals(event)) {
+            mirrorRememberSnapshotItem(sp, editor, message, time);
+        } else if ("remember.snapshot.end".equals(event)) {
+            mirrorRememberSnapshotEnd(editor, message, time);
+        }
+        if (event.startsWith("replay.")) {
+            mirrorReplayChain(sp, editor, event, message, time);
+        }
+    }
+
+    private static void mirrorRememberSnapshotBegin(
+            SharedPreferences sp,
+            SharedPreferences.Editor editor,
+            String message,
+            long time) {
+        clearRememberedSnapshot(sp, editor);
+        Integer count = intValue(valueOf(message, "count"));
+        editor.putLong(KEY_MEMORY_SNAPSHOT_TIME, time)
+                .putString(KEY_MEMORY_SNAPSHOT_REASON,
+                        "reason=" + safe(valueOf(message, "reason")))
+                .putInt(KEY_MEMORY_SNAPSHOT_COUNT, count != null ? count : 0);
+    }
+
+    private static void mirrorRememberSnapshotItem(
+            SharedPreferences sp,
+            SharedPreferences.Editor editor,
+            String message,
+            long time) {
+        String mac = valueOf(message, "mac");
+        if (mac == null || mac.isEmpty()) return;
+        String suffix = memorySuffix(mac);
+        rememberDevice(sp, editor, suffix);
+        String prefix = memoryPrefix(suffix);
+        boolean remembered = Boolean.parseBoolean(String.valueOf(valueOf(message, "remembered")));
+        boolean hasSnapshot = Boolean.parseBoolean(String.valueOf(valueOf(message, "hasSnapshot")));
+        editor.putString(prefix + "mac", mac)
+                .putBoolean(prefix + "remembered", remembered)
+                .putBoolean(prefix + "hasSnapshot", hasSnapshot)
+                .putLong(prefix + "time", time);
+
+        Integer codec = intValue(valueOf(message, "codec"));
+        Long specific1 = longValue(valueOf(message, "specific1"));
+        Integer rate = intValue(valueOf(message, "rate"));
+        if (remembered && hasSnapshot && codec != null && specific1 != null && rate != null) {
+            editor.putInt(prefix + "codec", codec)
+                    .putLong(prefix + "specific1", specific1)
+                    .putInt(prefix + "rate", rate);
+        } else {
+            editor.remove(prefix + "codec")
+                    .remove(prefix + "specific1")
+                    .remove(prefix + "rate");
+        }
+    }
+
+    private static void mirrorRememberSnapshotEnd(
+            SharedPreferences.Editor editor,
+            String message,
+            long time) {
+        Integer count = intValue(valueOf(message, "count"));
+        editor.putLong(KEY_MEMORY_SNAPSHOT_TIME, time)
+                .putString(KEY_MEMORY_SNAPSHOT_REASON,
+                        "reason=" + safe(valueOf(message, "reason")))
+                .putInt(KEY_MEMORY_SNAPSHOT_COUNT, count != null ? count : 0);
+    }
+
+    private static void clearRememberedSnapshot(
+            SharedPreferences sp,
+            SharedPreferences.Editor editor) {
+        String devices = sp.getString(KEY_MEMORY_DEVICE_LIST, "");
+        if (devices != null && !devices.isEmpty()) {
+            String[] suffixes = devices.split("\\n");
+            for (String suffix : suffixes) {
+                if (suffix == null || suffix.trim().isEmpty()) continue;
+                String prefix = memoryPrefix(suffix.trim());
+                editor.remove(prefix + "mac")
+                        .remove(prefix + "remembered")
+                        .remove(prefix + "hasSnapshot")
+                        .remove(prefix + "codec")
+                        .remove(prefix + "specific1")
+                        .remove(prefix + "rate")
+                        .remove(prefix + "time");
+            }
+        }
+        editor.remove(KEY_MEMORY_DEVICE_LIST);
+    }
+
+    private static void mirrorReplayChain(
+            SharedPreferences sp,
+            SharedPreferences.Editor editor,
+            String event,
+            String message,
+            long time) {
+        String entry = formatTime(time) + " " + stripEventPrefix(message);
+        String old = sp.getString(KEY_MEMORY_REPLAY_CHAIN, "");
+        long lastTime = sp.getLong(KEY_MEMORY_REPLAY_TIME, 0L);
+        boolean expired = lastTime <= 0L || Math.abs(time - lastTime) > 30_000L;
+        boolean startEvent = "replay.bootstrap.scan".equals(event)
+                || "replay.schedule".equals(event)
+                || "replay.pending_ready".equals(event);
+        String merged = expired && startEvent
+                ? entry
+                : (old == null || old.isEmpty() ? entry : old + '\n' + entry);
+        editor.putString(KEY_MEMORY_REPLAY_CHAIN, trimRing(merged, MAX_MEMORY_REPLAY_CHARS))
+                .putLong(KEY_MEMORY_REPLAY_TIME, time);
     }
 
     private static void mark(
@@ -226,6 +423,109 @@ public final class DiagnosticEvents {
 
     private static String safe(String value) {
         return value != null && !value.isEmpty() ? value : "unknown";
+    }
+
+    private static String valueOf(String message, String key) {
+        if (message == null || key == null || key.isEmpty()) return null;
+        String marker = key + "=";
+        int start = message.indexOf(marker);
+        if (start < 0) return null;
+        start += marker.length();
+        int end = message.indexOf(' ', start);
+        return end > start ? message.substring(start, end) : message.substring(start);
+    }
+
+    private static Integer intValue(String value) {
+        if (value == null || value.isEmpty()) return null;
+        try {
+            return Integer.decode(value);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static Long longValue(String value) {
+        if (value == null || value.isEmpty()) return null;
+        try {
+            return Long.decode(value);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static void rememberDevice(
+            SharedPreferences sp,
+            SharedPreferences.Editor editor,
+            String suffix) {
+        String old = sp.getString(KEY_MEMORY_DEVICE_LIST, "");
+        if (containsLine(old, suffix)) return;
+        editor.putString(KEY_MEMORY_DEVICE_LIST,
+                old == null || old.isEmpty() ? suffix : old + '\n' + suffix);
+    }
+
+    private static boolean containsLine(String lines, String target) {
+        if (lines == null || lines.isEmpty()) return false;
+        String[] split = lines.split("\\n");
+        for (String item : split) {
+            if (target.equals(item)) return true;
+        }
+        return false;
+    }
+
+    private static String memorySuffix(String mac) {
+        String safeMac = safe(mac);
+        StringBuilder sb = new StringBuilder(safeMac.length());
+        for (int i = 0; i < safeMac.length(); i++) {
+            char c = safeMac.charAt(i);
+            if (Character.isLetterOrDigit(c)) {
+                sb.append(c);
+            } else {
+                sb.append('_');
+            }
+        }
+        return sb.length() > 0 ? sb.toString() : "unknown";
+    }
+
+    private static String memoryPrefix(String suffix) {
+        return "memory.device." + suffix + ".";
+    }
+
+    private static String memoryValueLabel(int codec, long specific1, int rate) {
+        String codecLabel = CodecLabelTable.codecLabel(null, codec, specific1);
+        String qualityLabel = qualityLabel(codec, specific1);
+        String rateLabel = sampleRateLabel(rate);
+        return codecLabel + " / " + qualityLabel + " / " + rateLabel;
+    }
+
+    private static String qualityLabel(int codec, long specific1) {
+        if (CodecLabelTable.isKnownQuality(codec, specific1)) {
+            return CodecLabelTable.qualityLabel(null, codec, specific1);
+        }
+        if (specific1 == 0L) return "默认/自适应档位";
+        return "specific1=" + specific1 + " (0x" + Long.toHexString(specific1) + ")";
+    }
+
+    private static String sampleRateLabel(int rateMask) {
+        if (rateMask <= 0) return "系统默认采样率";
+        int[] rates = CodecSnapshot.decodeSampleRateBits(rateMask);
+        if (rates.length == 1) {
+            return CodecLabelTable.sampleRateLabel(rates[0]);
+        }
+        if (rates.length > 1) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < rates.length; i++) {
+                if (i > 0) sb.append('/');
+                sb.append(CodecLabelTable.sampleRateLabel(rates[i]));
+            }
+            return sb.toString();
+        }
+        return "采样率 bit=0x" + Integer.toHexString(rateMask);
+    }
+
+    private static String stripEventPrefix(String message) {
+        if (message == null) return "";
+        int start = message.indexOf("evt=");
+        return start >= 0 ? message.substring(start) : message;
     }
 
     private static String level(int priority) {

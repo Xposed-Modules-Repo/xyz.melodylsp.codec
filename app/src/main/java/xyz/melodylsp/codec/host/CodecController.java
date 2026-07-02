@@ -52,6 +52,7 @@ import xyz.melodylsp.codec.bridge.CodecIpc;
 import xyz.melodylsp.codec.bridge.CodecRequest;
 import xyz.melodylsp.codec.bridge.CodecSnapshot;
 import xyz.melodylsp.codec.bt.BluetoothCodecReflect;
+import xyz.melodylsp.codec.diag.DiagnosticEvents;
 import xyz.melodylsp.codec.label.CodecLabelTable;
 import xyz.melodylsp.codec.storage.PreferenceStore;
 import xyz.melodylsp.codec.util.MLog;
@@ -104,6 +105,7 @@ public final class CodecController {
     private final Map<String, Long> classicRestoreDeadlines = new HashMap<>();
     private final Map<String, CodecSnapshot> lastHighQualitySnapshots = new HashMap<>();
     private final Map<String, Long> codecWriteGenerations = new HashMap<>();
+    private BroadcastReceiver memorySnapshotReceiver;
     private volatile boolean nativePatchUnsupported;
 
     public interface SurfaceRescanRequester {
@@ -129,6 +131,8 @@ public final class CodecController {
         this.leAudioManager = new xyz.melodylsp.codec.leaudio.LeAudioManager(
                 this.context, this::onLeAudioStateChanged);
         registerActivityCleanup();
+        registerMemorySnapshotRequestReceiver();
+        prefs.emitDiagnosticSnapshot("controller_ready");
         registerNativePatchStateReceiver();
         queryNativePatchStateSoon();
     }
@@ -166,6 +170,32 @@ public final class CodecController {
 
     private void requestSurfaceRescanDelayed(String reason, long delayMs) {
         mainHandler.postDelayed(() -> requestSurfaceRescan(reason), delayMs);
+    }
+
+    private void registerMemorySnapshotRequestReceiver() {
+        if (memorySnapshotReceiver != null) return;
+        memorySnapshotReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context ctx, Intent intent) {
+                if (intent == null) return;
+                if (!DiagnosticEvents.ACTION_MEMORY_SNAPSHOT_REQUEST.equals(intent.getAction())) return;
+                prefs.emitDiagnosticSnapshot("request");
+            }
+        };
+        IntentFilter filter = new IntentFilter(DiagnosticEvents.ACTION_MEMORY_SNAPSHOT_REQUEST);
+        try {
+            context.registerReceiver(memorySnapshotReceiver, filter, null, mainHandler,
+                    Context.RECEIVER_EXPORTED);
+            MLog.event("remember.snapshot.receiver", "registered", true);
+        } catch (Throwable t) {
+            try {
+                context.registerReceiver(memorySnapshotReceiver, filter, null, mainHandler);
+                MLog.event("remember.snapshot.receiver", "registered", true, "mode", "legacy");
+            } catch (Throwable inner) {
+                memorySnapshotReceiver = null;
+                MLog.w("remember snapshot receiver registration failed", inner);
+            }
+        }
     }
 
     private void registerNativePatchStateReceiver() {

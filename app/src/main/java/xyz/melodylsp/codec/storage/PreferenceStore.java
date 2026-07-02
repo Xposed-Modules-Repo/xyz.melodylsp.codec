@@ -3,6 +3,9 @@ package xyz.melodylsp.codec.storage;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import java.util.Map;
+import java.util.TreeSet;
+
 import xyz.melodylsp.codec.util.MLog;
 
 /**
@@ -54,6 +57,7 @@ public final class PreferenceStore {
             MLog.w("remember.set commit failed mac=" + redact(mac));
         }
         MLog.event("remember.set", "mac", redact(mac), "remembered", remembered);
+        emitDiagnosticSnapshot("remember_set");
     }
 
     public RememberedValue readSnapshot(String mac) {
@@ -68,6 +72,12 @@ public final class PreferenceStore {
         long specific1 = sp.getLong(mac + KEY_SPECIFIC1_SUFFIX, -1L);
         int sampleRate = sp.getInt(mac + KEY_SAMPLERATE_SUFFIX, -1);
         return new RememberedValue(codecType, specific1, sampleRate);
+    }
+
+    public String[] rememberedMacs() {
+        SharedPreferences sp = prefs();
+        TreeSet<String> macs = rememberedMacs(sp.getAll());
+        return macs.toArray(new String[0]);
     }
 
     public void writeSnapshot(String mac, int codecType, long codecSpecific1, int sampleRate) {
@@ -90,6 +100,47 @@ public final class PreferenceStore {
                 "codec", codecType,
                 "specific1", codecSpecific1,
                 "rate", sampleRate);
+        emitDiagnosticSnapshot("remember_write");
+    }
+
+    public void emitDiagnosticSnapshot(String reason) {
+        SharedPreferences sp = prefs();
+        TreeSet<String> macs = rememberedMacs(sp.getAll());
+        String safeReason = reason != null && !reason.isEmpty() ? reason : "unknown";
+        MLog.event("remember.snapshot.begin",
+                "reason", safeReason,
+                "count", macs.size());
+        int index = 0;
+        for (String mac : macs) {
+            boolean remembered = sp.getBoolean(mac + KEY_REMEMBER_SUFFIX, false);
+            boolean hasSnapshot = sp.contains(mac + KEY_SPECIFIC1_SUFFIX)
+                    && sp.contains(mac + KEY_SAMPLERATE_SUFFIX);
+            int codec = sp.getInt(mac + KEY_CODEC_TYPE_SUFFIX, CODEC_TYPE_UNKNOWN);
+            long specific1 = sp.getLong(mac + KEY_SPECIFIC1_SUFFIX, -1L);
+            int rate = sp.getInt(mac + KEY_SAMPLERATE_SUFFIX, -1);
+            MLog.event("remember.snapshot.item",
+                    "index", index++,
+                    "mac", redact(mac),
+                    "remembered", remembered,
+                    "hasSnapshot", hasSnapshot,
+                    "codec", codec,
+                    "specific1", specific1,
+                    "rate", rate);
+        }
+        MLog.event("remember.snapshot.end",
+                "reason", safeReason,
+                "count", macs.size());
+    }
+
+    private static TreeSet<String> rememberedMacs(Map<String, ?> all) {
+        TreeSet<String> macs = new TreeSet<>();
+        for (String key : all.keySet()) {
+            if (key.endsWith(KEY_REMEMBER_SUFFIX)) {
+                String mac = key.substring(0, key.length() - KEY_REMEMBER_SUFFIX.length());
+                if (mac != null && !mac.isEmpty()) macs.add(mac);
+            }
+        }
+        return macs;
     }
 
     private SharedPreferences prefs() {

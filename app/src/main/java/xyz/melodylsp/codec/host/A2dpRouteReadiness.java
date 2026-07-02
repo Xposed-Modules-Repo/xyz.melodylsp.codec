@@ -9,8 +9,10 @@ import android.content.Intent;
 
 import java.lang.reflect.Array;
 import java.lang.reflect.Method;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -33,11 +35,13 @@ final class A2dpRouteReadiness {
 
     private static final Pattern MAC_PATTERN =
             Pattern.compile("(?i)([0-9A-F]{2}:){5}[0-9A-F]{2}");
+    private static final long WAITING_FAIL_OPEN_MS = 10_000L;
 
     private final Context context;
     private final Object lock = new Object();
     private final Set<String> readyMacs = new HashSet<>();
     private final Set<String> waitingMacs = new HashSet<>();
+    private final Map<String, Long> waitingSinceMs = new HashMap<>();
     private boolean loggedQueryFailure;
     private boolean loggedPermissionDenied;
 
@@ -55,6 +59,7 @@ final class A2dpRouteReadiness {
             }
             readyMacs.remove(key);
             waitingMacs.add(key);
+            waitingSinceMs.put(key, System.currentTimeMillis());
         }
         MLog.event("a2dp.ready.reset", "mac", redactMac(key));
     }
@@ -65,6 +70,7 @@ final class A2dpRouteReadiness {
         synchronized (lock) {
             readyMacs.remove(key);
             waitingMacs.remove(key);
+            waitingSinceMs.remove(key);
         }
         MLog.event("a2dp.ready.clear", "mac", redactMac(key));
     }
@@ -76,6 +82,7 @@ final class A2dpRouteReadiness {
         synchronized (lock) {
             changed = readyMacs.add(key);
             waitingMacs.remove(key);
+            waitingSinceMs.remove(key);
         }
         if (changed) {
             MLog.event("a2dp.ready.latched",
@@ -89,11 +96,17 @@ final class A2dpRouteReadiness {
         String key = normalizeMac(mac);
         if (key == null) return true;
         if (isLatchedReady(key)) return true;
-        if (isWaitingForActive(key)) return false;
         Boolean activeMatch = queryActiveA2dpMatch(key);
         if (Boolean.TRUE.equals(activeMatch)) {
             markReady(key, "active_query");
             return true;
+        }
+        if (isWaitingForActive(key)) {
+            if (waitingTimedOut(key)) {
+                markFailOpen(key);
+                return true;
+            }
+            return false;
         }
         return true;
     }
@@ -120,6 +133,24 @@ final class A2dpRouteReadiness {
         synchronized (lock) {
             return waitingMacs.contains(key);
         }
+    }
+
+    private boolean waitingTimedOut(String key) {
+        synchronized (lock) {
+            Long since = waitingSinceMs.get(key);
+            return since != null && System.currentTimeMillis() - since >= WAITING_FAIL_OPEN_MS;
+        }
+    }
+
+    private void markFailOpen(String key) {
+        synchronized (lock) {
+            waitingMacs.remove(key);
+            waitingSinceMs.remove(key);
+            readyMacs.add(key);
+        }
+        MLog.event("a2dp.ready.fail_open",
+                "mac", redactMac(key),
+                "timeoutMs", WAITING_FAIL_OPEN_MS);
     }
 
     private Boolean queryActiveA2dpMatch(String expected) {

@@ -53,10 +53,12 @@ public final class MasterSwitchActivity extends Activity {
     private SharedPreferences diagPrefs;
     private LinearLayout statusList;
     private LinearLayout packageList;
+    private LinearLayout memoryList;
     private TextView recentEvents;
     private TextView enabledStatus;
     private TextView sessionStatus;
     private Switch launcherSwitch;
+    private boolean memorySnapshotRefreshPending;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -79,6 +81,7 @@ public final class MasterSwitchActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        requestRememberedSnapshot();
         refresh();
     }
 
@@ -99,6 +102,7 @@ public final class MasterSwitchActivity extends Activity {
 
         packageList = section(root, "环境信息");
         statusList = section(root, "诊断状态");
+        memoryList = section(root, "记忆信息");
 
         LinearLayout eventCard = card();
         eventCard.addView(titleText("最近事件"), matchWrap());
@@ -203,7 +207,10 @@ public final class MasterSwitchActivity extends Activity {
         row1.addView(collect, collectLp);
 
         Button refresh = button("刷新状态", false);
-        refresh.setOnClickListener(v -> refresh());
+        refresh.setOnClickListener(v -> {
+            requestRememberedSnapshot();
+            refresh();
+        });
         LinearLayout.LayoutParams refreshLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
         refreshLp.topMargin = dp(10);
@@ -265,8 +272,26 @@ public final class MasterSwitchActivity extends Activity {
         addStatusRow("最近警告", "last.warning");
         addStatusRow("最近错误", "last.error");
 
+        clearDynamicRows(memoryList);
+        addInfoRow(memoryList, "当前 Melody 真实记忆",
+                DiagnosticEvents.rememberedSummary(diagPrefs), 0);
+        addInfoRow(memoryList, "上次记忆恢复链路",
+                tailLines(DiagnosticEvents.replayChain(diagPrefs), 24), 0);
+
         String events = diagPrefs.getString(DiagnosticEvents.KEY_EVENTS, "");
         recentEvents.setText(tailLines(events, 12));
+    }
+
+    private void requestRememberedSnapshot() {
+        DiagnosticEvents.requestRememberedSnapshot(this);
+        if (memorySnapshotRefreshPending) return;
+        memorySnapshotRefreshPending = true;
+        View anchor = memoryList != null ? memoryList : getWindow().getDecorView();
+        anchor.postDelayed(() -> {
+            memorySnapshotRefreshPending = false;
+            diagPrefs = getSharedPreferences(DiagnosticEvents.PREFS, Context.MODE_PRIVATE);
+            refresh();
+        }, 900L);
     }
 
     private void onModuleSwitchChanged(CompoundButton buttonView, boolean isChecked) {
