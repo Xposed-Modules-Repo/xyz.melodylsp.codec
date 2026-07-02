@@ -1821,6 +1821,7 @@ public final class CodecController {
                     "request", request);
             return;
         }
+        replayer.onUserCodecWrite(sub != null ? sub.mac : null, request, "codec_write");
         bridge.setCodec(request, () -> isCurrentCodecWrite(sub, generation))
                 .whenComplete((result, ex) -> mainHandler.post(() -> {
             if (!isCurrentCodecWrite(sub, generation)) {
@@ -2007,6 +2008,10 @@ public final class CodecController {
         setCodecModeStatus(sub, Strings.STATE_SWITCHING_CODEC);
         setBlockDisabled(sub, true);
         long generation = nextCodecWriteGeneration(sub);
+        replayer.onUserCodecWrite(
+                sub != null ? sub.mac : null,
+                null,
+                enable ? "optional_enable" : "optional_disable");
         bridge.setOptionalCodecs(sub.mac, enable, () -> isCurrentCodecWrite(sub, generation))
                 .whenComplete((result, ex) -> mainHandler.post(() -> {
             if (!isCurrentCodecWrite(sub, generation)) {

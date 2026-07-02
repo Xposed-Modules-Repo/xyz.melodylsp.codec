@@ -35,8 +35,12 @@ public final class ConnectionStateReplayer {
 
     private static final String ACTION_CONNECTION_STATE_CHANGED =
             "android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED";
+    private static final String ACTION_USER_CODEC_WRITE =
+            "xyz.melodylsp.codec.action.USER_CODEC_WRITE";
     private static final String EXTRA_DEVICE = "android.bluetooth.device.extra.DEVICE";
     private static final String EXTRA_STATE = "android.bluetooth.profile.extra.STATE";
+    private static final String EXTRA_USER_CODEC_WRITE_REASON = "user_codec_write_reason";
+    private static final String EXTRA_USER_CODEC_WRITE_ORIGIN = "user_codec_write_origin";
     private static final int STATE_CONNECTED = 2;
 
     private static final long REPLAY_DELAY_MS = 1_500L;
@@ -46,6 +50,7 @@ public final class ConnectionStateReplayer {
     private static final long GAME_MODE_EXIT_PROBE_DELAY_MS = 5_000L;
     private static final long GAME_MODE_EXIT_PROBE_FAST_DELAY_MS = 250L;
     private static final long GAME_MODE_EXIT_PROBE_MIN_DELAY_MS = 250L;
+    private static final long USER_CODEC_WRITE_QUIET_MS = 20_000L;
     private static final long[] BOOTSTRAP_SCAN_DELAYS_MS = {1_500L, 6_000L, 15_000L};
     private static final int MAX_REPLAY_WRITE_ATTEMPTS = 2;
 
@@ -61,6 +66,7 @@ public final class ConnectionStateReplayer {
     private final Map<String, Set<Integer>> gameModeActiveTypes = new HashMap<>();
     private final Map<String, Long> gameModeFallbackUntilMs = new HashMap<>();
     private final Map<String, GameModeProbeSchedule> gameModeProbeSchedules = new HashMap<>();
+    private final Map<String, Long> userCodecWriteQuietUntilMs = new HashMap<>();
 
     private BroadcastReceiver receiver;
     private boolean bootstrapActiveQueryFallbackLogged;
@@ -101,6 +107,8 @@ public final class ConnectionStateReplayer {
                     handleActiveDeviceChanged(intent);
                 } else if (CodecIpc.ACTION_GAME_MODE_STATE.equals(action)) {
                     handleGameModeStateBroadcast(intent);
+                } else if (ACTION_USER_CODEC_WRITE.equals(action)) {
+                    handleUserCodecWriteBroadcast(intent);
                 }
             }
         };
@@ -108,6 +116,7 @@ public final class ConnectionStateReplayer {
         filter.addAction(ACTION_CONNECTION_STATE_CHANGED);
         filter.addAction(A2dpRouteReadiness.ACTION_ACTIVE_DEVICE_CHANGED);
         filter.addAction(CodecIpc.ACTION_GAME_MODE_STATE);
+        filter.addAction(ACTION_USER_CODEC_WRITE);
         try {
             context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
         } catch (Throwable t) {
@@ -126,6 +135,27 @@ public final class ConnectionStateReplayer {
         } catch (IllegalArgumentException ignored) {
         }
         receiver = null;
+    }
+
+    void onUserCodecWrite(String mac, CodecRequest request, String reason) {
+        String key = A2dpRouteReadiness.normalizeMac(mac);
+        if (key == null && request != null) {
+            key = A2dpRouteReadiness.normalizeMac(request.mac);
+        }
+        if (key == null) return;
+        String safeReason = safeUserCodecWriteReason(reason);
+        applyUserCodecWriteQuiet(key, request, safeReason, "local");
+        Intent intent = new Intent(ACTION_USER_CODEC_WRITE);
+        intent.setPackage(context.getPackageName());
+        intent.putExtra(CodecIpc.EXTRA_TOKEN, CodecIpc.TOKEN);
+        intent.putExtra(CodecIpc.EXTRA_MAC, key);
+        intent.putExtra(EXTRA_USER_CODEC_WRITE_REASON, safeReason);
+        intent.putExtra(EXTRA_USER_CODEC_WRITE_ORIGIN, processName);
+        try {
+            context.sendBroadcast(intent);
+        } catch (Throwable t) {
+            MLog.w("user codec write broadcast failed", t);
+        }
     }
 
     private void handleConnected(String mac) {
@@ -163,6 +193,9 @@ public final class ConnectionStateReplayer {
                     "reason", reason);
             return;
         }
+        if (skipReplayForUserCodecWriteQuiet(key, reason)) {
+            return;
+        }
         if (isGameModeSuppressed(key)) {
             suppressReplayForGameMode(key, reason);
             return;
@@ -193,9 +226,27 @@ public final class ConnectionStateReplayer {
         if (key == null) return;
         synchronized (this) {
             pendingReplays.remove(key);
+            userCodecWriteQuietUntilMs.remove(key);
             bumpGenerationLocked(key);
         }
         routeReadiness.markDisconnected(key);
+    }
+
+    private void handleUserCodecWriteBroadcast(Intent intent) {
+        if (intent == null
+                || !ACTION_USER_CODEC_WRITE.equals(intent.getAction())
+                || !CodecIpc.TOKEN.equals(intent.getStringExtra(CodecIpc.EXTRA_TOKEN))) {
+            return;
+        }
+        String origin = intent.getStringExtra(EXTRA_USER_CODEC_WRITE_ORIGIN);
+        if (processName != null && processName.equals(origin)) return;
+        String key = A2dpRouteReadiness.normalizeMac(intent.getStringExtra(CodecIpc.EXTRA_MAC));
+        if (key == null) return;
+        applyUserCodecWriteQuiet(
+                key,
+                null,
+                safeUserCodecWriteReason(intent.getStringExtra(EXTRA_USER_CODEC_WRITE_REASON)),
+                origin != null && !origin.isEmpty() ? "broadcast:" + origin : "broadcast");
     }
 
     @SuppressWarnings("deprecation")
@@ -618,6 +669,9 @@ public final class ConnectionStateReplayer {
             long delayMs,
             String reason) {
         if (!replayEnabled) return;
+        if (skipReplayForUserCodecWriteQuiet(mac, reason)) {
+            return;
+        }
         if (isGameModeSuppressed(mac)) {
             suppressReplayForGameMode(mac, reason);
             return;
@@ -635,6 +689,9 @@ public final class ConnectionStateReplayer {
                 MLog.event("replay.stale.ignore",
                         "mac", A2dpRouteReadiness.redactMac(mac),
                         "generation", generation);
+                return;
+            }
+            if (skipReplayForUserCodecWriteQuiet(mac, reason)) {
                 return;
             }
             if (isGameModeSuppressed(mac)) {
@@ -680,6 +737,13 @@ public final class ConnectionStateReplayer {
             int attempt) {
         Thread worker = new Thread(() -> {
             if (!isCurrentReplay(mac, generation)) return;
+            if (isUserCodecWriteQuiet(mac)) {
+                MLog.event("replay.stale.user_write",
+                        "mac", A2dpRouteReadiness.redactMac(mac),
+                        "generation", generation,
+                        "stage", "worker_start");
+                return;
+            }
             if (isGameModeSuppressed(mac)) {
                 suppressReplayForGameMode(mac, "worker_start");
                 return;
@@ -869,6 +933,13 @@ public final class ConnectionStateReplayer {
             PreferenceStore.RememberedValue stored,
             long generation) {
         if (!isCurrentReplay(mac, generation)) return false;
+        if (isUserCodecWriteQuiet(mac)) {
+            MLog.event("replay.stale.user_write",
+                    "mac", A2dpRouteReadiness.redactMac(mac),
+                    "generation", generation,
+                    "stage", "current_check");
+            return false;
+        }
         if (isGameModeSuppressed(mac)) {
             MLog.event("replay.stale.game_mode",
                     "mac", A2dpRouteReadiness.redactMac(mac),
@@ -894,6 +965,61 @@ public final class ConnectionStateReplayer {
                 "mac", A2dpRouteReadiness.redactMac(mac),
                 "reason", reason,
                 "activeTypes", activeGameModeTypeCount(mac));
+    }
+
+    private void applyUserCodecWriteQuiet(
+            String key,
+            CodecRequest request,
+            String reason,
+            String source) {
+        long until = System.currentTimeMillis() + USER_CODEC_WRITE_QUIET_MS;
+        synchronized (this) {
+            pendingReplays.remove(key);
+            userCodecWriteQuietUntilMs.put(key, until);
+            bumpGenerationLocked(key);
+        }
+        MLog.event("replay.cancel.user_write",
+                "mac", A2dpRouteReadiness.redactMac(key),
+                "source", source,
+                "reason", reason,
+                "quietMs", USER_CODEC_WRITE_QUIET_MS,
+                "request", String.valueOf(request));
+    }
+
+    private boolean skipReplayForUserCodecWriteQuiet(String mac, String reason) {
+        String key = A2dpRouteReadiness.normalizeMac(mac);
+        if (key == null) return false;
+        long remainingMs = userCodecWriteQuietRemainingMs(key);
+        if (remainingMs <= 0L) return false;
+        MLog.event("replay.skip.user_write_quiet",
+                "mac", A2dpRouteReadiness.redactMac(key),
+                "reason", reason,
+                "remainingMs", remainingMs);
+        return true;
+    }
+
+    private boolean isUserCodecWriteQuiet(String mac) {
+        String key = A2dpRouteReadiness.normalizeMac(mac);
+        return key != null && userCodecWriteQuietRemainingMs(key) > 0L;
+    }
+
+    private long userCodecWriteQuietRemainingMs(String key) {
+        long now = System.currentTimeMillis();
+        synchronized (this) {
+            Long until = userCodecWriteQuietUntilMs.get(key);
+            if (until == null) return 0L;
+            long remainingMs = until - now;
+            if (remainingMs <= 0L) {
+                userCodecWriteQuietUntilMs.remove(key);
+                return 0L;
+            }
+            return remainingMs;
+        }
+    }
+
+    private static String safeUserCodecWriteReason(String reason) {
+        if (reason == null || reason.isEmpty()) return "codec_write";
+        return reason.replaceAll("\\s+", "_");
     }
 
     private boolean isGameModeSuppressed(String mac) {
