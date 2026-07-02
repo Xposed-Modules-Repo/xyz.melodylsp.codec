@@ -14,6 +14,9 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import dalvik.system.DexFile;
 
@@ -40,9 +43,12 @@ public final class SystemHookInstaller {
             "com.android.bluetooth.a2dp.A2dpNativeInterface";
     private static final String CLASS_BT_UTILS = "com.android.bluetooth.Utils";
     private static final String MELODY_PKG = "com.oplus.melody";
+    private static final long GAME_MODE_SBC_FALLBACK_TTL_MS = 180_000L;
     private static final long[] NATIVE_PATCH_RETRY_DELAYS_MS = {
             0L, 350L, 1_500L, 5_000L, 12_000L
     };
+    private static final Pattern MAC_PATTERN =
+            Pattern.compile("(?i)([0-9A-F]{2}:){5}[0-9A-F]{2}");
 
     private final MelodyCodecLspEntry module;
     private final ClassLoader classLoader;
@@ -388,6 +394,7 @@ public final class SystemHookInstaller {
                 MLog.event("bt.native.setCodecConfigPreference",
                         "device", args.length > 0 ? describeDevice(args[0]) : "?",
                         "configs", args.length > 1 ? describeCodecConfigArray(args[1]) : "[]");
+                maybeBroadcastGameModeSbcHint(args);
                 try {
                     Object result = chain.proceed();
                     MLog.event("bt.native.setCodecConfigPreference.done",
@@ -523,6 +530,70 @@ public final class SystemHookInstaller {
             if ("android.bluetooth.BluetoothCodecStatus".equals(p.getName())) hasStatus = true;
         }
         return hasDevice && hasStatus;
+    }
+
+    private void maybeBroadcastGameModeSbcHint(Object[] args) {
+        if (args == null || args.length < 2) return;
+        if (!containsGameModeSbcConfig(args[1])) return;
+        String mac = macFromDeviceArg(args[0]);
+        if (mac == null) return;
+        Context context = appContext != null ? appContext : currentApplication();
+        if (context == null) return;
+        Intent intent = new Intent(CodecIpc.ACTION_GAME_MODE_STATE);
+        intent.setPackage(CodecIpc.MELODY_PKG);
+        intent.putExtra(CodecIpc.EXTRA_TOKEN, CodecIpc.TOKEN);
+        intent.putExtra(CodecIpc.EXTRA_MAC, mac);
+        intent.putExtra(CodecIpc.EXTRA_GAME_MODE_ACTIVE, true);
+        intent.putExtra(CodecIpc.EXTRA_GAME_MODE_TYPE, -1);
+        intent.putExtra(CodecIpc.EXTRA_GAME_MODE_SOURCE, "bt.native.sbc_s2_3");
+        intent.putExtra(CodecIpc.EXTRA_GAME_MODE_TTL_MS, GAME_MODE_SBC_FALLBACK_TTL_MS);
+        try {
+            context.sendBroadcast(intent);
+            MLog.event("game.mode.bt_hint",
+                    "mac", redactMac(mac),
+                    "ttlMs", GAME_MODE_SBC_FALLBACK_TTL_MS);
+        } catch (Throwable t) {
+            MLog.w("game mode SBC hint broadcast failed", t);
+        }
+    }
+
+    private static boolean containsGameModeSbcConfig(Object configs) {
+        if (configs == null || !configs.getClass().isArray()) return false;
+        int length = Array.getLength(configs);
+        for (int i = 0; i < length; i++) {
+            if (isGameModeSbcConfig(Array.get(configs, i))) return true;
+        }
+        return false;
+    }
+
+    private static boolean isGameModeSbcConfig(Object config) {
+        if (config == null) return false;
+        return readInt(config, "getCodecType") == 0
+                && readLong(config, "getCodecSpecific2") == 3L;
+    }
+
+    private static String macFromDeviceArg(Object device) {
+        if (device instanceof BluetoothDevice) {
+            try {
+                return normalizeMac(((BluetoothDevice) device).getAddress());
+            } catch (Throwable ignored) {
+                return null;
+            }
+        }
+        return normalizeMac(String.valueOf(device));
+    }
+
+    private static String normalizeMac(String value) {
+        if (value == null) return null;
+        Matcher matcher = MAC_PATTERN.matcher(value);
+        if (!matcher.find()) return null;
+        return matcher.group().toUpperCase(Locale.ROOT);
+    }
+
+    private static String redactMac(String mac) {
+        String key = normalizeMac(mac);
+        if (key == null || key.length() < 17) return "?";
+        return key.substring(0, 2) + "**" + key.substring(15);
     }
 
     private static String describeDevice(Object device) {

@@ -22,6 +22,8 @@ public final class CodecIpc {
             "xyz.melodylsp.codec.action.QUERY_NATIVE_PATCH";
     public static final String ACTION_NATIVE_PATCH_STATE =
             "xyz.melodylsp.codec.action.NATIVE_PATCH_STATE";
+    public static final String ACTION_GAME_MODE_STATE =
+            "xyz.melodylsp.codec.action.GAME_MODE_STATE";
 
     public static final String EXTRA_TOKEN = "token";
     public static final String EXTRA_REQUEST_ID = "request_id";
@@ -57,6 +59,10 @@ public final class CodecIpc {
     public static final String EXTRA_NATIVE_PATCH_PATCHED = "native_patch_patched";
     public static final String EXTRA_NATIVE_PATCH_ORIGINAL = "native_patch_original";
     public static final String EXTRA_NATIVE_PATCH_SUCCESS = "native_patch_success";
+    public static final String EXTRA_GAME_MODE_ACTIVE = "game_mode_active";
+    public static final String EXTRA_GAME_MODE_TYPE = "game_mode_type";
+    public static final String EXTRA_GAME_MODE_SOURCE = "game_mode_source";
+    public static final String EXTRA_GAME_MODE_TTL_MS = "game_mode_ttl_ms";
 
     public static final String TOKEN = "mlcdc-codec-v1";
 

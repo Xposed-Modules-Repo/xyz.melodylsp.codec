@@ -14,9 +14,12 @@ import android.os.Looper;
 
 import java.lang.reflect.Method;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
+import xyz.melodylsp.codec.bridge.CodecIpc;
 import xyz.melodylsp.codec.bridge.CodecRequest;
 import xyz.melodylsp.codec.bridge.CodecSnapshot;
 import xyz.melodylsp.codec.label.CodecLabelTable;
@@ -38,6 +41,8 @@ public final class ConnectionStateReplayer {
 
     private static final long REPLAY_DELAY_MS = 1_500L;
     private static final long REPLAY_VERIFY_DELAY_MS = 2_000L;
+    private static final long GAME_MODE_EXIT_REPLAY_DELAY_MS = 2_000L;
+    private static final long GAME_MODE_LIVE_SBC_FALLBACK_MS = 180_000L;
     private static final long[] BOOTSTRAP_SCAN_DELAYS_MS = {1_500L, 6_000L, 15_000L};
     private static final int MAX_REPLAY_WRITE_ATTEMPTS = 2;
 
@@ -50,6 +55,8 @@ public final class ConnectionStateReplayer {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Map<String, PreferenceStore.RememberedValue> pendingReplays = new HashMap<>();
     private final Map<String, Long> replayGenerations = new HashMap<>();
+    private final Map<String, Set<Integer>> gameModeActiveTypes = new HashMap<>();
+    private final Map<String, Long> gameModeFallbackUntilMs = new HashMap<>();
 
     private BroadcastReceiver receiver;
 
@@ -85,12 +92,15 @@ public final class ConnectionStateReplayer {
                     }
                 } else if (A2dpRouteReadiness.ACTION_ACTIVE_DEVICE_CHANGED.equals(action)) {
                     handleActiveDeviceChanged(intent);
+                } else if (CodecIpc.ACTION_GAME_MODE_STATE.equals(action)) {
+                    handleGameModeStateBroadcast(intent);
                 }
             }
         };
         IntentFilter filter = new IntentFilter();
         filter.addAction(ACTION_CONNECTION_STATE_CHANGED);
         filter.addAction(A2dpRouteReadiness.ACTION_ACTIVE_DEVICE_CHANGED);
+        filter.addAction(CodecIpc.ACTION_GAME_MODE_STATE);
         try {
             context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
         } catch (Throwable t) {
@@ -146,6 +156,10 @@ public final class ConnectionStateReplayer {
                     "reason", reason);
             return;
         }
+        if (isGameModeSuppressed(key)) {
+            suppressReplayForGameMode(key, reason);
+            return;
+        }
         PreferenceStore.RememberedValue value = prefs.readSnapshot(key);
         if (value == null) {
             MLog.event("replay.skip.snapshot_missing",
@@ -171,6 +185,8 @@ public final class ConnectionStateReplayer {
         if (key == null) return;
         synchronized (this) {
             pendingReplays.remove(key);
+            gameModeActiveTypes.remove(key);
+            gameModeFallbackUntilMs.remove(key);
             bumpGenerationLocked(key);
         }
         routeReadiness.markDisconnected(key);
@@ -195,6 +211,121 @@ public final class ConnectionStateReplayer {
         }
         if (pending != null) {
             scheduleReplay(key, pending, REPLAY_DELAY_MS, "active_ready");
+        }
+    }
+
+    void onOfficialGameModeState(
+            String mac,
+            int type,
+            boolean active,
+            String source) {
+        onOfficialGameModeState(mac, type, active, source, 0L);
+    }
+
+    private void handleGameModeStateBroadcast(Intent intent) {
+        if (intent == null
+                || !CodecIpc.ACTION_GAME_MODE_STATE.equals(intent.getAction())
+                || !CodecIpc.TOKEN.equals(intent.getStringExtra(CodecIpc.EXTRA_TOKEN))) {
+            return;
+        }
+        onOfficialGameModeState(
+                intent.getStringExtra(CodecIpc.EXTRA_MAC),
+                intent.getIntExtra(CodecIpc.EXTRA_GAME_MODE_TYPE, -1),
+                intent.getBooleanExtra(CodecIpc.EXTRA_GAME_MODE_ACTIVE, false),
+                intent.getStringExtra(CodecIpc.EXTRA_GAME_MODE_SOURCE),
+                intent.getLongExtra(CodecIpc.EXTRA_GAME_MODE_TTL_MS, 0L));
+    }
+
+    private void onOfficialGameModeState(
+            String mac,
+            int type,
+            boolean active,
+            String source,
+            long fallbackTtlMs) {
+        String key = A2dpRouteReadiness.normalizeMac(mac);
+        if (key == null) return;
+        String safeSource = source != null && !source.isEmpty() ? source : "unknown";
+        long now = System.currentTimeMillis();
+        boolean fallbackOnly = fallbackTtlMs > 0L;
+        boolean replayAfterExit = false;
+        boolean suppressed;
+        int activeTypeCount;
+        synchronized (this) {
+            boolean wasSuppressed = isGameModeSuppressedLocked(key, now);
+            if (active) {
+                if (!fallbackOnly) {
+                    Set<Integer> activeTypes = gameModeActiveTypes.get(key);
+                    if (activeTypes == null) {
+                        activeTypes = new HashSet<>();
+                        gameModeActiveTypes.put(key, activeTypes);
+                    }
+                    activeTypes.add(type);
+                }
+                if (fallbackTtlMs > 0L) {
+                    long until = now + fallbackTtlMs;
+                    gameModeFallbackUntilMs.put(key, until);
+                    scheduleGameModeFallbackExpiry(key, until, fallbackTtlMs);
+                }
+                pendingReplays.remove(key);
+                bumpGenerationLocked(key);
+            } else {
+                Set<Integer> activeTypes = gameModeActiveTypes.get(key);
+                if (activeTypes != null) {
+                    activeTypes.remove(type);
+                    if (activeTypes.isEmpty()) {
+                        gameModeActiveTypes.remove(key);
+                    }
+                }
+                // A host-side false state is the authoritative "game really exited" signal.
+                // Do not let the bluetooth-process SBC fallback TTL delay restoration afterward.
+                gameModeFallbackUntilMs.remove(key);
+                bumpGenerationLocked(key);
+            }
+            suppressed = isGameModeSuppressedLocked(key, now);
+            activeTypeCount = activeGameModeTypeCountLocked(key);
+            replayAfterExit = wasSuppressed && !suppressed && !active;
+        }
+        MLog.event("game.mode.state",
+                "mac", A2dpRouteReadiness.redactMac(key),
+                "type", type,
+                "active", active,
+                "source", safeSource,
+                "ttlMs", fallbackTtlMs,
+                "suppressed", suppressed,
+                "activeTypes", activeTypeCount);
+        if (active) {
+            MLog.event("replay.suppress.game_active",
+                    "mac", A2dpRouteReadiness.redactMac(key),
+                    "source", safeSource,
+                    "type", type);
+        } else if (replayAfterExit) {
+            MLog.event("replay.suppress.game_exit",
+                    "mac", A2dpRouteReadiness.redactMac(key),
+                    "source", safeSource,
+                    "delayMs", GAME_MODE_EXIT_REPLAY_DELAY_MS);
+            maybeReplayConnected(key, GAME_MODE_EXIT_REPLAY_DELAY_MS, "game_mode_exit");
+        }
+    }
+
+    private void scheduleGameModeFallbackExpiry(String key, long expectedUntil, long delayMs) {
+        mainHandler.postDelayed(() -> expireGameModeFallback(key, expectedUntil),
+                Math.max(1_000L, delayMs + 250L));
+    }
+
+    private void expireGameModeFallback(String key, long expectedUntil) {
+        boolean replayAfterExpiry;
+        synchronized (this) {
+            Long currentUntil = gameModeFallbackUntilMs.get(key);
+            if (currentUntil == null || currentUntil != expectedUntil) return;
+            if (hasActiveGameModeTypesLocked(key)) return;
+            gameModeFallbackUntilMs.remove(key);
+            bumpGenerationLocked(key);
+            replayAfterExpiry = true;
+        }
+        if (replayAfterExpiry) {
+            MLog.event("replay.suppress.game_fallback_expired",
+                    "mac", A2dpRouteReadiness.redactMac(key));
+            maybeReplayConnected(key, GAME_MODE_EXIT_REPLAY_DELAY_MS, "game_mode_fallback_expired");
         }
     }
 
@@ -357,6 +488,10 @@ public final class ConnectionStateReplayer {
             long delayMs,
             String reason) {
         if (!replayEnabled) return;
+        if (isGameModeSuppressed(mac)) {
+            suppressReplayForGameMode(mac, reason);
+            return;
+        }
         long generation;
         synchronized (this) {
             generation = bumpGenerationLocked(mac);
@@ -370,6 +505,10 @@ public final class ConnectionStateReplayer {
                 MLog.event("replay.stale.ignore",
                         "mac", A2dpRouteReadiness.redactMac(mac),
                         "generation", generation);
+                return;
+            }
+            if (isGameModeSuppressed(mac)) {
+                suppressReplayForGameMode(mac, reason);
                 return;
             }
             if (!routeReadiness.isReadyOrUnknown(mac)) {
@@ -411,6 +550,10 @@ public final class ConnectionStateReplayer {
             int attempt) {
         Thread worker = new Thread(() -> {
             if (!isCurrentReplay(mac, generation)) return;
+            if (isGameModeSuppressed(mac)) {
+                suppressReplayForGameMode(mac, "worker_start");
+                return;
+            }
             replay(mac, stored, generation, attempt);
         }, "MelodyCodecLsp-replay");
         worker.setDaemon(true);
@@ -424,6 +567,10 @@ public final class ConnectionStateReplayer {
             int attempt) {
         if (!replayEnabled) return;
         if (!isReplayStillCurrent(mac, stored, generation)) return;
+        if (isGameModeSuppressed(mac)) {
+            suppressReplayForGameMode(mac, "before_read");
+            return;
+        }
         if (!routeReadiness.isReadyOrUnknown(mac)) {
             synchronized (this) {
                 pendingReplays.put(mac, stored);
@@ -437,6 +584,16 @@ public final class ConnectionStateReplayer {
             MLog.w("replay skipped, getStatus returned null mac="
                     + A2dpRouteReadiness.redactMac(mac));
             scheduleReplayRetry(mac, stored, generation, attempt);
+            return;
+        }
+
+        if (isGameModeSbcSnapshot(live)) {
+            onOfficialGameModeState(
+                    mac,
+                    -1,
+                    true,
+                    "live.sbc_s2_3",
+                    GAME_MODE_LIVE_SBC_FALLBACK_MS);
             return;
         }
 
@@ -533,6 +690,10 @@ public final class ConnectionStateReplayer {
             int attempt) {
         mainHandler.postDelayed(() -> {
             if (!isReplayStillCurrent(mac, stored, generation)) return;
+            if (isGameModeSuppressed(mac)) {
+                suppressReplayForGameMode(mac, "verify");
+                return;
+            }
             if (!routeReadiness.isReadyOrUnknown(mac)) {
                 MLog.event("replay.verify.skip_not_ready",
                         "mac", A2dpRouteReadiness.redactMac(mac),
@@ -541,6 +702,10 @@ public final class ConnectionStateReplayer {
             }
             Thread worker = new Thread(() -> {
                 if (!isReplayStillCurrent(mac, stored, generation)) return;
+                if (isGameModeSuppressed(mac)) {
+                    suppressReplayForGameMode(mac, "verify_worker");
+                    return;
+                }
                 CodecSnapshot live = bridge.getStatus(mac);
                 if (live != null && matchesStoredValue(live, stored)) {
                     MLog.event("replay.stable",
@@ -573,6 +738,12 @@ public final class ConnectionStateReplayer {
             PreferenceStore.RememberedValue stored,
             long generation) {
         if (!isCurrentReplay(mac, generation)) return false;
+        if (isGameModeSuppressed(mac)) {
+            MLog.event("replay.stale.game_mode",
+                    "mac", A2dpRouteReadiness.redactMac(mac),
+                    "generation", generation);
+            return false;
+        }
         PreferenceStore.RememberedValue current = prefs.readSnapshot(mac);
         if (!sameRememberedValue(stored, current)) {
             MLog.event("replay.stale.preference",
@@ -583,9 +754,61 @@ public final class ConnectionStateReplayer {
         return true;
     }
 
+    private void suppressReplayForGameMode(String mac, String reason) {
+        synchronized (this) {
+            pendingReplays.remove(mac);
+            bumpGenerationLocked(mac);
+        }
+        MLog.event("replay.suppress.game_active",
+                "mac", A2dpRouteReadiness.redactMac(mac),
+                "reason", reason,
+                "activeTypes", activeGameModeTypeCount(mac));
+    }
+
+    private boolean isGameModeSuppressed(String mac) {
+        String key = A2dpRouteReadiness.normalizeMac(mac);
+        if (key == null) return false;
+        synchronized (this) {
+            return isGameModeSuppressedLocked(key, System.currentTimeMillis());
+        }
+    }
+
+    private boolean isGameModeSuppressedLocked(String key, long now) {
+        if (hasActiveGameModeTypesLocked(key)) return true;
+        Long until = gameModeFallbackUntilMs.get(key);
+        if (until == null) return false;
+        if (until > now) return true;
+        gameModeFallbackUntilMs.remove(key);
+        return false;
+    }
+
+    private boolean hasActiveGameModeTypesLocked(String key) {
+        Set<Integer> activeTypes = gameModeActiveTypes.get(key);
+        return activeTypes != null && !activeTypes.isEmpty();
+    }
+
+    private int activeGameModeTypeCount(String mac) {
+        String key = A2dpRouteReadiness.normalizeMac(mac);
+        if (key == null) return 0;
+        synchronized (this) {
+            return activeGameModeTypeCountLocked(key);
+        }
+    }
+
+    private int activeGameModeTypeCountLocked(String key) {
+        Set<Integer> activeTypes = gameModeActiveTypes.get(key);
+        return activeTypes != null ? activeTypes.size() : 0;
+    }
+
     private static boolean isStandardCodec(int codecType) {
         return codecType == CodecLabelTable.CODEC_SBC
                 || codecType == CodecLabelTable.CODEC_AAC;
+    }
+
+    private static boolean isGameModeSbcSnapshot(CodecSnapshot snapshot) {
+        return snapshot != null
+                && snapshot.activeCodecType == CodecLabelTable.CODEC_SBC
+                && snapshot.activeCodecSpecific2 == 3L;
     }
 
     private static boolean sameRememberedValue(

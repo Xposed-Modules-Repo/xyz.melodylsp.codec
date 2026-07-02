@@ -292,6 +292,10 @@ public final class DiagnosticEvents {
         if (message.contains("evt=replay.")) {
             mark(editor, "remember.replay", stateFromMessage(message), message, time);
         }
+        if (message.contains("evt=game.mode.")
+                || message.contains("evt=replay.suppress.game")) {
+            mark(editor, "game.mode", stateFromMessage(message), message, time);
+        }
         if (priority >= Log.WARN && !isRecoverableFallbackWarning(message)) {
             String key = priority >= Log.ERROR ? "last.error" : "last.warning";
             mark(editor, key, priority >= Log.ERROR ? "error" : "warning", message, time);
@@ -405,7 +409,8 @@ public final class DiagnosticEvents {
         boolean expired = lastTime <= 0L || Math.abs(time - lastTime) > 30_000L;
         boolean startEvent = "replay.bootstrap.scan".equals(event)
                 || "replay.schedule".equals(event)
-                || "replay.pending_ready".equals(event);
+                || "replay.pending_ready".equals(event)
+                || "replay.suppress.game_active".equals(event);
         String merged = expired && startEvent
                 ? entry
                 : (old == null || old.isEmpty() ? entry : old + '\n' + entry);
@@ -544,6 +549,10 @@ public final class DiagnosticEvents {
                 || message.contains("outcome=CONFIRMED")
                 || message.contains("evt=replay.stable")
                 || message.contains("evt=replay.already_applied")
+                || message.contains("evt=replay.suppress.game_exit")
+                || message.contains("evt=replay.suppress.game_fallback_expired")
+                || (message.contains("evt=game.mode.state")
+                && message.contains("active=false"))
                 || message.contains("evt=dexkit.bridge.created")
                 || message.contains("evt=dexkit.bridge.closed")
                 || message.contains("evt=dexkit.find.classes")
@@ -554,6 +563,9 @@ public final class DiagnosticEvents {
         }
         if (message.contains("skip")
                 || message.contains("pending")
+                || message.contains("evt=replay.suppress.game_active")
+                || (message.contains("evt=game.mode.state")
+                && message.contains("active=true"))
                 || message.contains("evt=dexkit.find.empty")
                 || message.contains("waiting")) {
             return "pending";

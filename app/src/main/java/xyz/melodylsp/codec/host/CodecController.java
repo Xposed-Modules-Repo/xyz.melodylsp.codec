@@ -138,6 +138,36 @@ public final class CodecController {
         queryNativePatchStateSoon();
     }
 
+    public void onOfficialGameModeState(
+            String mac,
+            int type,
+            boolean active,
+            String source) {
+        replayer.onOfficialGameModeState(mac, type, active, source);
+        broadcastOfficialGameModeState(mac, type, active, source);
+    }
+
+    private void broadcastOfficialGameModeState(
+            String mac,
+            int type,
+            boolean active,
+            String source) {
+        if (mac == null || mac.isEmpty()) return;
+        Intent intent = new Intent(CodecIpc.ACTION_GAME_MODE_STATE);
+        intent.setPackage(context.getPackageName());
+        intent.putExtra(CodecIpc.EXTRA_TOKEN, CodecIpc.TOKEN);
+        intent.putExtra(CodecIpc.EXTRA_MAC, mac);
+        intent.putExtra(CodecIpc.EXTRA_GAME_MODE_ACTIVE, active);
+        intent.putExtra(CodecIpc.EXTRA_GAME_MODE_TYPE, type);
+        intent.putExtra(CodecIpc.EXTRA_GAME_MODE_SOURCE,
+                source != null && !source.isEmpty() ? source : "host.game_sound");
+        try {
+            context.sendBroadcast(intent);
+        } catch (Throwable t) {
+            MLog.w("game mode state broadcast failed", t);
+        }
+    }
+
     private void markClassicRestorePending(String mac) {
         if (mac == null) return;
         classicRestorePending.add(mac);

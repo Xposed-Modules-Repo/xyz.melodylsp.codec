@@ -54,6 +54,7 @@ public final class FeedbackCollector {
             "codec.write",
             "remember.write",
             "remember.replay",
+            "game.mode",
             "last.warning",
             "last.error"
     };
@@ -77,8 +78,10 @@ public final class FeedbackCollector {
             "remember.snapshot",
             "remember.set",
             "remember.write",
+            "game.mode",
             "replay.bootstrap",
             "replay.schedule",
+            "replay.suppress",
             "replay.dispatch",
             "replay.outcome",
             "replay.retry",

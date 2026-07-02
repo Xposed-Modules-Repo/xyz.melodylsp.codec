@@ -17,6 +17,8 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -80,6 +82,9 @@ public final class HostHookInstaller {
     private static final String CLASS_BASE_COUI_PREFERENCE_FRAGMENT = "com.oplus.melody.ui.base.b";
     private static final String CLASS_COUI_PREFERENCE_FRAGMENT = "com.coui.appcompat.preference.h";
     private static final String CLASS_ANDROIDX_PREFERENCE_FRAGMENT = "androidx.preference.g";
+    private static final String CLASS_GAME_SOUND_MANAGER = "x6.d";
+    private static final String CLASS_GAME_SOUND_REPOSITORY_CLIENT = "x8.C1641b";
+    private static final String CLASS_GAME_SOUND_REPOSITORY_SERVER = "x8.C1642c";
 
     /** {@code PreferenceCategory.setKey(cls.getSimpleName())} stamps this on the Hi-Res item. */
     private static final String KEY_HIRES_ITEM = "HiQualityAudioItem";
@@ -109,6 +114,7 @@ public final class HostHookInstaller {
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private final Set<Activity> knownActivities =
             Collections.newSetFromMap(new WeakHashMap<>());
+    private final Map<String, Set<Integer>> pendingGameModeTypes = new HashMap<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private CodecController controller;
     private boolean activityScanRegistered;
@@ -130,6 +136,7 @@ public final class HostHookInstaller {
             hookOneSpace();
             hookDetailMainActivity();
             hookOneSpaceActivity();
+            hookOfficialGameModeState();
         } finally {
             dexKit.close();
         }
@@ -170,6 +177,7 @@ public final class HostHookInstaller {
         SettingsGlobalFallback fallback = new SettingsGlobalFallback(app);
         CodecBridgeClient bridge = new CodecBridgeClient(app, reflect, fallback);
         controller = new CodecController(app, reflect, bridge, prefs, this::requestSurfaceRescan);
+        flushPendingOfficialGameModeStates();
         registerActivityScanCallbacks(app);
 
         MLog.event("controller.ready", "version", hostVersion);
@@ -760,6 +768,126 @@ public final class HostHookInstaller {
             return result;
         });
         MLog.event("onespace.activity.hooked");
+    }
+
+    private void hookOfficialGameModeState() {
+        int count = 0;
+        count += hookOfficialGameModeStateMethod(
+                CLASS_GAME_SOUND_MANAGER, "host.game_sound_manager");
+        count += hookOfficialGameModeStateMethod(
+                CLASS_GAME_SOUND_REPOSITORY_CLIENT, "host.game_sound_repository_client");
+        count += hookOfficialGameModeStateMethod(
+                CLASS_GAME_SOUND_REPOSITORY_SERVER, "host.game_sound_repository_server");
+        MLog.event("game.mode.hooks", "count", count);
+    }
+
+    private int hookOfficialGameModeStateMethod(String className, String source) {
+        Class<?> cls = loadHostClass(className);
+        if (cls == null) return 0;
+        int count = 0;
+        for (Method m : cls.getDeclaredMethods()) {
+            if (!isOfficialGameModeStateMethod(m)) continue;
+            try {
+                m.setAccessible(true);
+            } catch (Throwable ignored) {
+            }
+            module.hook(m).intercept(chain -> {
+                Object[] args = chain.getArgs().toArray();
+                String mac = args.length > 0 ? normalizeMacCandidate(args[0]) : null;
+                int type = args.length > 1 && args[1] instanceof Number
+                        ? ((Number) args[1]).intValue()
+                        : -1;
+                boolean active = args.length > 2 && Boolean.TRUE.equals(args[2]);
+                if (active) {
+                    notifyOfficialGameModeState(mac, type, true, source);
+                }
+                Object result = chain.proceed();
+                if (!active) {
+                    notifyOfficialGameModeState(mac, type, false, source);
+                }
+                return result;
+            });
+            count++;
+            MLog.event("game.mode.method.hooked",
+                    "class", className,
+                    "method", m.getName(),
+                    "source", source);
+        }
+        return count;
+    }
+
+    private static boolean isOfficialGameModeStateMethod(Method method) {
+        if (method == null || !"d".equals(method.getName())) return false;
+        Class<?>[] params = method.getParameterTypes();
+        return params.length == 3
+                && params[0] == String.class
+                && (params[1] == int.class || params[1] == Integer.class)
+                && (params[2] == boolean.class || params[2] == Boolean.class);
+    }
+
+    private void notifyOfficialGameModeState(
+            String mac,
+            int type,
+            boolean active,
+            String source) {
+        String key = normalizeMac(mac);
+        if (key == null) return;
+        CodecController current = controller;
+        if (current == null) {
+            rememberPendingOfficialGameModeState(key, type, active);
+            MLog.event("game.mode.pending",
+                    "mac", A2dpRouteReadiness.redactMac(key),
+                    "type", type,
+                    "active", active,
+                    "source", source);
+            return;
+        }
+        current.onOfficialGameModeState(key, type, active, source);
+    }
+
+    private synchronized void rememberPendingOfficialGameModeState(
+            String key,
+            int type,
+            boolean active) {
+        Set<Integer> activeTypes = pendingGameModeTypes.get(key);
+        if (active) {
+            if (activeTypes == null) {
+                activeTypes = new HashSet<>();
+                pendingGameModeTypes.put(key, activeTypes);
+            }
+            activeTypes.add(type);
+        } else if (activeTypes != null) {
+            activeTypes.remove(type);
+            if (activeTypes.isEmpty()) {
+                pendingGameModeTypes.remove(key);
+            }
+        }
+    }
+
+    private void flushPendingOfficialGameModeStates() {
+        Map<String, Set<Integer>> copy;
+        synchronized (this) {
+            if (pendingGameModeTypes.isEmpty()) return;
+            copy = new HashMap<>();
+            for (Map.Entry<String, Set<Integer>> entry : pendingGameModeTypes.entrySet()) {
+                copy.put(entry.getKey(), new HashSet<>(entry.getValue()));
+            }
+            pendingGameModeTypes.clear();
+        }
+        CodecController current = controller;
+        if (current == null) return;
+        int count = 0;
+        for (Map.Entry<String, Set<Integer>> entry : copy.entrySet()) {
+            for (Integer type : entry.getValue()) {
+                current.onOfficialGameModeState(
+                        entry.getKey(),
+                        type != null ? type : -1,
+                        true,
+                        "host.pending_game_mode");
+                count++;
+            }
+        }
+        MLog.event("game.mode.pending.flushed", "count", count);
     }
 
     /**
