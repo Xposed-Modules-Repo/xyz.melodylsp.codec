@@ -4,6 +4,12 @@
 
 模块主要服务于 ColorOS / OPlus 系设备上的 `com.oplus.melody`，同时配合 `com.android.bluetooth` 和 `com.oplus.wirelesssettings` 作用域完成更稳定的状态读取和写入。
 
+## 支持作者
+
+如果这个模块对你有帮助，可以扫码请我喝杯咖啡。感谢支持，也欢迎通过 Issue 或反馈包一起完善更多设备适配。
+
+<img src="docs/PY_QR.png" alt="微信 / 支付宝捐赠二维码" width="520">
+
 ## 主要功能
 
 - 在「无线耳机」主面板 `DetailMainActivity` 注入蓝牙音质区域。
