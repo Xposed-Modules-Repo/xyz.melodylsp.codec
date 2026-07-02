@@ -41,9 +41,11 @@ public final class ConnectionStateReplayer {
 
     private static final long REPLAY_DELAY_MS = 1_500L;
     private static final long REPLAY_VERIFY_DELAY_MS = 2_000L;
-    private static final long GAME_MODE_EXIT_REPLAY_DELAY_MS = 2_000L;
+    private static final long GAME_MODE_EXIT_REPLAY_DELAY_MS = 800L;
     private static final long GAME_MODE_LIVE_SBC_FALLBACK_MS = 180_000L;
     private static final long GAME_MODE_EXIT_PROBE_DELAY_MS = 5_000L;
+    private static final long GAME_MODE_EXIT_PROBE_FAST_DELAY_MS = 250L;
+    private static final long GAME_MODE_EXIT_PROBE_MIN_DELAY_MS = 250L;
     private static final long[] BOOTSTRAP_SCAN_DELAYS_MS = {1_500L, 6_000L, 15_000L};
     private static final int MAX_REPLAY_WRITE_ATTEMPTS = 2;
 
@@ -54,14 +56,16 @@ public final class ConnectionStateReplayer {
     private final String processName;
     private final boolean replayEnabled;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final Map<String, PreferenceStore.RememberedValue> pendingReplays = new HashMap<>();
+    private final Map<String, PendingReplay> pendingReplays = new HashMap<>();
     private final Map<String, Long> replayGenerations = new HashMap<>();
     private final Map<String, Set<Integer>> gameModeActiveTypes = new HashMap<>();
     private final Map<String, Long> gameModeFallbackUntilMs = new HashMap<>();
+    private final Map<String, GameModeProbeSchedule> gameModeProbeSchedules = new HashMap<>();
 
     private BroadcastReceiver receiver;
     private boolean bootstrapActiveQueryFallbackLogged;
     private boolean bootstrapConnectedQueryFallbackLogged;
+    private long nextGameModeProbeToken;
 
     public ConnectionStateReplayer(
             Context context,
@@ -172,12 +176,13 @@ public final class ConnectionStateReplayer {
         }
         if (!routeReadiness.isReadyOrUnknown(key)) {
             synchronized (this) {
-                pendingReplays.put(key, value);
+                pendingReplays.put(key, new PendingReplay(value, delayMs, reason));
                 bumpGenerationLocked(key);
             }
             MLog.event("replay.pending_ready",
                     "mac", A2dpRouteReadiness.redactMac(key),
-                    "reason", reason);
+                    "reason", reason,
+                    "delayMs", delayMs);
             return;
         }
         scheduleReplay(key, value, delayMs, reason);
@@ -206,12 +211,18 @@ public final class ConnectionStateReplayer {
         if (key == null) return;
         routeReadiness.markReady(key, "replay.active_broadcast");
         if (!replayEnabled) return;
-        PreferenceStore.RememberedValue pending;
+        PendingReplay pending;
+        Long fallbackUntil;
         synchronized (this) {
             pending = pendingReplays.remove(key);
+            fallbackUntil = gameModeFallbackExitProbeUntilLocked(key);
+        }
+        if (fallbackUntil != null) {
+            scheduleGameModeFallbackExitProbe(
+                    key, fallbackUntil, GAME_MODE_EXIT_PROBE_FAST_DELAY_MS);
         }
         if (pending != null) {
-            scheduleReplay(key, pending, REPLAY_DELAY_MS, "active_ready");
+            scheduleReplay(key, pending.value, pending.delayMs, pending.activeReadyReason());
         }
     }
 
@@ -249,6 +260,8 @@ public final class ConnectionStateReplayer {
         long now = System.currentTimeMillis();
         boolean fallbackOnly = fallbackTtlMs > 0L;
         boolean replayAfterExit = false;
+        boolean probeAfterInactive = false;
+        long probeExpectedUntil = 0L;
         boolean suppressed;
         int activeTypeCount;
         synchronized (this) {
@@ -286,7 +299,15 @@ public final class ConnectionStateReplayer {
                 if (removedActiveType) {
                     gameModeFallbackUntilMs.remove(key);
                 }
-                bumpGenerationLocked(key);
+                if (removedActiveType) {
+                    bumpGenerationLocked(key);
+                } else if (wasSuppressed) {
+                    Long fallbackUntil = gameModeFallbackExitProbeUntilLocked(key);
+                    if (fallbackUntil != null) {
+                        probeAfterInactive = true;
+                        probeExpectedUntil = fallbackUntil;
+                    }
+                }
             }
             suppressed = isGameModeSuppressedLocked(key);
             activeTypeCount = activeGameModeTypeCountLocked(key);
@@ -311,6 +332,9 @@ public final class ConnectionStateReplayer {
                     "source", safeSource,
                     "delayMs", GAME_MODE_EXIT_REPLAY_DELAY_MS);
             maybeReplayConnected(key, GAME_MODE_EXIT_REPLAY_DELAY_MS, "game_mode_exit");
+        } else if (probeAfterInactive) {
+            scheduleGameModeFallbackExitProbe(
+                    key, probeExpectedUntil, GAME_MODE_EXIT_PROBE_FAST_DELAY_MS);
         }
     }
 
@@ -335,12 +359,33 @@ public final class ConnectionStateReplayer {
             long expectedUntil,
             long delayMs) {
         if (!replayEnabled) return;
-        mainHandler.postDelayed(() -> runGameModeFallbackExitProbe(key, expectedUntil),
-                Math.max(1_000L, delayMs));
+        long safeDelayMs = Math.max(GAME_MODE_EXIT_PROBE_MIN_DELAY_MS, delayMs);
+        long dueAtMs = System.currentTimeMillis() + safeDelayMs;
+        long token;
+        synchronized (this) {
+            GameModeProbeSchedule current = gameModeProbeSchedules.get(key);
+            if (current != null
+                    && current.expectedUntil == expectedUntil
+                    && current.dueAtMs <= dueAtMs) {
+                return;
+            }
+            token = ++nextGameModeProbeToken;
+            gameModeProbeSchedules.put(
+                    key, new GameModeProbeSchedule(expectedUntil, dueAtMs, token));
+        }
+        mainHandler.postDelayed(() -> runGameModeFallbackExitProbe(key, expectedUntil, token),
+                safeDelayMs);
     }
 
-    private void runGameModeFallbackExitProbe(String key, long expectedUntil) {
+    private void runGameModeFallbackExitProbe(String key, long expectedUntil, long token) {
         synchronized (this) {
+            GameModeProbeSchedule scheduled = gameModeProbeSchedules.get(key);
+            if (scheduled == null
+                    || scheduled.token != token
+                    || scheduled.expectedUntil != expectedUntil) {
+                return;
+            }
+            gameModeProbeSchedules.remove(key);
             Long currentUntil = gameModeFallbackUntilMs.get(key);
             if (currentUntil == null || currentUntil != expectedUntil) return;
             if (hasActiveGameModeTypesLocked(key)) return;
@@ -598,7 +643,7 @@ public final class ConnectionStateReplayer {
             }
             if (!routeReadiness.isReadyOrUnknown(mac)) {
                 synchronized (ConnectionStateReplayer.this) {
-                    pendingReplays.put(mac, stored);
+                    pendingReplays.put(mac, new PendingReplay(stored, delayMs, reason));
                 }
                 MLog.event("replay.skip.not_ready",
                         "mac", A2dpRouteReadiness.redactMac(mac),
@@ -658,7 +703,8 @@ public final class ConnectionStateReplayer {
         }
         if (!routeReadiness.isReadyOrUnknown(mac)) {
             synchronized (this) {
-                pendingReplays.put(mac, stored);
+                pendingReplays.put(mac,
+                        new PendingReplay(stored, REPLAY_DELAY_MS, "worker_not_ready"));
             }
             MLog.event("replay.abort.not_ready",
                     "mac", A2dpRouteReadiness.redactMac(mac));
@@ -883,6 +929,39 @@ public final class ConnectionStateReplayer {
     private int activeGameModeTypeCountLocked(String key) {
         Set<Integer> activeTypes = gameModeActiveTypes.get(key);
         return activeTypes != null ? activeTypes.size() : 0;
+    }
+
+    private Long gameModeFallbackExitProbeUntilLocked(String key) {
+        if (hasActiveGameModeTypesLocked(key)) return null;
+        return gameModeFallbackUntilMs.get(key);
+    }
+
+    private static final class PendingReplay {
+        final PreferenceStore.RememberedValue value;
+        final long delayMs;
+        final String reason;
+
+        PendingReplay(PreferenceStore.RememberedValue value, long delayMs, String reason) {
+            this.value = value;
+            this.delayMs = delayMs;
+            this.reason = reason != null && !reason.isEmpty() ? reason : "pending_ready";
+        }
+
+        String activeReadyReason() {
+            return "active_ready/" + reason;
+        }
+    }
+
+    private static final class GameModeProbeSchedule {
+        final long expectedUntil;
+        final long dueAtMs;
+        final long token;
+
+        GameModeProbeSchedule(long expectedUntil, long dueAtMs, long token) {
+            this.expectedUntil = expectedUntil;
+            this.dueAtMs = dueAtMs;
+            this.token = token;
+        }
     }
 
     private static boolean isStandardCodec(int codecType) {
